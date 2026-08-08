@@ -147,7 +147,7 @@ references in stock's binary at `3f42a91c` / `3f42a934`).
 > thresholds and boot ordering as stock — see
 > [`adc-calibration-spec.md`](adc-calibration-spec.md) for the full
 > reproduction contract. Line-fitting cali handle is created once in
-> `pv_motor_init` with `atten=DB_12`, `bitwidth=12`, `default_vref=0`,
+> `dv_motor_init` with `atten=DB_12`, `bitwidth=12`, `default_vref=0`,
 > and channels 2/1/0/3/7 are configured in that exact order.
 >
 > The v0.2.4 failure (WS2812 latch-red + hang after motor commands) has

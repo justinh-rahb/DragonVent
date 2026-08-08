@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+dragonvent-diag — capture the motor diagnostic log from a running DragonVent
+                device and summarise what the hall sensors are reporting.
+
+Usage:
+    scripts/dragonvent-diag [-p PORT]
+
+What to do while it's running:
+
+    1. Connect the device over USB serial.
+    2. Load the portal (http://DragonVent.local/ or the AP IP).
+    3. Try to Open the vent — leave it for at least 5 seconds even if the
+       motor doesn't stop, so we capture the retry loop.
+    4. Try to Close the vent — should stop when it reaches the endpoint.
+    5. Repeat if you like.
+    6. Ctrl-C to finish. A summary + log file path get printed.
+
+The full serial log lands in dragonvent-log-YYYYMMDD-HHMMSS.txt for you to
+share back to the maintainer.
+"""
+import argparse
+import datetime
+import glob
+import os
+import re
+import sys
+from collections import defaultdict
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _require_pyserial():
+    try:
+        import serial  # noqa: F401  (imported for its side effects)
+        return serial
+    except ImportError:
+        sys.stderr.write(
+            "dragonvent-diag: pyserial not installed. Install with:\n"
+            "  python3 -m pip install --user pyserial\n"
+        )
+        sys.exit(1)
+
+
+def autodetect_port():
+    for pattern in ("/dev/tty.usbserial-*", "/dev/ttyUSB*", "/dev/ttyACM*"):
+        matches = sorted(glob.glob(pattern))
+        if matches:
+            return matches[0]
+    return None
+
+
+def parse_args():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("-p", "--port", default=None,
+                    help="Serial port (default: autodetect)")
+    ap.add_argument("-b", "--baud", default=115200, type=int)
+    ap.add_argument("-o", "--output", default=None,
+                    help="Log file path (default: dragonvent-log-<timestamp>.txt)")
+    return ap.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    port = args.port or autodetect_port()
+    if port is None:
+        sys.exit("dragonvent-diag: no serial port found; pass -p /dev/tty.usbserial-XXXX")
+
+    output = args.output or (
+        "dragonvent-log-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + ".txt"
+    )
+
+    serial = _require_pyserial()
+    print(f"→ connecting to {port} at {args.baud} baud")
+    print(f"→ full log: {output}")
+    print("→ open the portal, then click Open / Close in Manual mode.")
+    print("→ press Ctrl-C when done.\n")
+
+    # Regexes for the interesting lines from dv_motor.
+    RE_DRIVING = re.compile(
+        r"dv_motor:\s+grp=(\d+)\s+driving\s+\(want=(\w+)\)\s+"
+        r"hall_raw=(-?\d+)\s+hall_state=(\d+)"
+    )
+    RE_STALLED = re.compile(
+        r"dv_motor:\s+grp=(\d+)\s+stalled;\s+retry\s+(\d+)/(\d+)\s+"
+        r"\(hall_raw=(-?\d+)\s+hall_state=(\d+)\)"
+    )
+    RE_GAVEUP = re.compile(
+        r"dv_motor:\s+grp=(\d+)\s+gave up.*want=(\w+)\s+hall_raw=(-?\d+)\s+"
+        r"hall_state=(\d+)"
+    )
+    RE_MOTOR_ANY = re.compile(r"dv_motor:")
+
+    # Per-group + per-target aggregates of (raw, mv) tuples seen while driving.
+    samples = defaultdict(list)
+    give_ups = []
+
+    try:
+        s = serial.Serial(port, args.baud, timeout=0.3)
+    except serial.SerialException as e:
+        sys.exit(f"dragonvent-diag: could not open {port}: {e}")
+
+    logf = open(output, "w", encoding="utf-8")
+    logf.write(f"# dragonvent-diag capture — {datetime.datetime.now().isoformat()}\n")
+    logf.write(f"# port={port} baud={args.baud}\n\n")
+
+    try:
+        while True:
+            try:
+                raw = s.readline()
+            except serial.SerialException as e:
+                # ESP crashed / USB dropped mid-capture — treat as Ctrl-C so
+                # the summary still gets printed with whatever we captured.
+                print(f"\n!! serial disconnected: {e}")
+                print("!! (device probably crashed or reset — summary below)\n")
+                break
+            if not raw:
+                continue
+            line = ANSI_RE.sub("", raw.decode("utf-8", errors="replace")).rstrip()
+            if not line:
+                continue
+            logf.write(line + "\n")
+            logf.flush()
+
+            m = RE_DRIVING.search(line)
+            if m:
+                g, want = m.group(1), m.group(2)
+                raw_v, state = int(m.group(3)), int(m.group(4))
+                samples[(g, want)].append(raw_v)
+                print(f"  driving  grp={g} want={want:<6}  raw={raw_v:>4}  state={state}")
+                continue
+
+            m = RE_STALLED.search(line)
+            if m:
+                g, retry, mx = m.group(1), int(m.group(2)), int(m.group(3))
+                raw_v, state = int(m.group(4)), int(m.group(5))
+                print(f"  stalled  grp={g} retry={retry}/{mx}                raw={raw_v:>4}  state={state}")
+                continue
+
+            m = RE_GAVEUP.search(line)
+            if m:
+                g, want = m.group(1), m.group(2)
+                raw_v, state = int(m.group(3)), int(m.group(4))
+                give_ups.append((g, want, raw_v, state))
+                print(f"  GAVE UP  grp={g} want={want:<6}  raw={raw_v:>4}  state={state}")
+                continue
+
+            if RE_MOTOR_ANY.search(line):
+                # Any other dv_motor line — echo it so we don't miss init /
+                # arrived events.
+                print(f"  {line[line.index('dv_motor:'):]}")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        s.close()
+        logf.close()
+
+    # -------- summary --------
+    print()
+    print("=" * 60)
+    print("Summary")
+    print("=" * 60)
+    if not samples:
+        print("No 'driving' log lines captured. Make sure you clicked Open or")
+        print("Close in Manual mode while the script was running.")
+    else:
+        for (g, want), vals in sorted(samples.items()):
+            v_min, v_max = min(vals), max(vals)
+            v_last = vals[-1]
+            print(f"  grp={g} want={want:<6}  raw range seen: {v_min}..{v_max}   "
+                  f"(last sample: {v_last}, {len(vals)} samples)")
+    if give_ups:
+        print()
+        print("Gave-up events:")
+        for g, want, raw_v, state in give_ups:
+            print(f"  grp={g} want={want:<6}  final raw={raw_v} state={state}")
+    print()
+    print(f"Full log written to: {os.path.abspath(output)}")
+    print("Share that file (or paste the summary above) so we can pick new")
+    print("hall thresholds for your board.")
+
+
+if __name__ == "__main__":
+    main()

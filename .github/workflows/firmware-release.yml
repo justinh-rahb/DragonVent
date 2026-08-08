@@ -37,12 +37,12 @@ jobs:
           target: esp32
           path: firmware
           command: >
-            python -m esptool --chip esp32 merge_bin -o openvent-full.bin
+            python -m esptool --chip esp32 merge_bin -o dragonvent-full.bin
             --flash_mode dio --flash_size 4MB --flash_freq 40m
             0x1000 build/bootloader/bootloader.bin
             0x8000 build/partition_table/partition-table.bin
             0xf000 build/ota_data_initial.bin
-            0x20000 build/openvent.bin
+            0x20000 build/dragonvent.bin
 
       - name: Stage release
         env:
@@ -52,11 +52,11 @@ jobs:
           mkdir -p dist
           # Bake the tag into the filename so a downloaded copy is obviously
           # versioned once the browser strips its Content-Disposition header.
-          # The openvent install helper still finds these via a glob pattern.
-          FULL="openvent-${RELEASE_TAG}-full.bin"
-          OTA="openvent-${RELEASE_TAG}-ota.bin"
-          mv firmware/openvent-full.bin "dist/${FULL}"
-          cp firmware/build/openvent.bin "dist/${OTA}"
+          # The dragonvent install helper still finds these via a glob pattern.
+          FULL="dragonvent-${RELEASE_TAG}-full.bin"
+          OTA="dragonvent-${RELEASE_TAG}-ota.bin"
+          mv firmware/dragonvent-full.bin "dist/${FULL}"
+          cp firmware/build/dragonvent.bin "dist/${OTA}"
           cd dist
           sha256sum "${FULL}" "${OTA}" > SHA256SUMS
           ls -lh
@@ -71,13 +71,13 @@ jobs:
           cat > release_notes.md <<NOTES
           ## Which file do I need?
 
-          - **\`openvent-${RELEASE_TAG}-full.bin\`** — first-time flash of a fresh module. Contains bootloader + partition table + OTA data + app, flashed with \`esptool\` over USB.
-          - **\`openvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload via the portal's **OTA firmware update** form.
+          - **\`dragonvent-${RELEASE_TAG}-full.bin\`** — first-time flash of a fresh module. Contains bootloader + partition table + OTA data + app, flashed with \`esptool\` over USB.
+          - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload via the portal's **OTA firmware update** form.
 
-          Prefer using the [\`openvent\` helper](https://github.com/justinh-rahb/OpenVent/blob/master/scripts/openvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
+          Prefer using the [\`dragonvent\` helper](https://github.com/justinh-rahb/OpenVent/blob/master/scripts/dragonvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
 
           \`\`\`
-          scripts/openvent install -t ${RELEASE_TAG}
+          scripts/dragonvent install -t ${RELEASE_TAG}
           \`\`\`
 
           ## ⚠ Back up your stock firmware first (only for first-time flashing)
@@ -85,14 +85,14 @@ jobs:
           This replaces the stock BTT firmware. There is currently **no signed image to roll back to** — BTT doesn't publish source or release binaries for the Panda Vent. Dump the whole flash before you write over it:
 
           \`\`\`
-          scripts/openvent backup                                             # or:
+          scripts/dragonvent backup                                             # or:
           python -m esptool --chip esp32 -p PORT -b 460800 read_flash 0x0 0x400000 stock-panda-vent-backup.bin
           \`\`\`
 
           Keep that file somewhere safe. To go back to stock:
 
           \`\`\`
-          scripts/openvent restore stock-panda-vent-backup.bin
+          scripts/dragonvent restore stock-panda-vent-backup.bin
           \`\`\`
 
           ## First-time flash (esptool)
@@ -101,23 +101,23 @@ jobs:
 
           \`\`\`
           python -m pip install esptool
-          python -m esptool --chip esp32 -p PORT -b 460800 write_flash 0x0 openvent-${RELEASE_TAG}-full.bin
+          python -m esptool --chip esp32 -p PORT -b 460800 write_flash 0x0 dragonvent-${RELEASE_TAG}-full.bin
           \`\`\`
 
           Replace \`PORT\` with your serial device (\`/dev/tty.usbserial-0001\` on macOS, \`/dev/ttyUSB0\` on Linux, \`COM3\` on Windows). Most USB devkits enter download mode automatically; bare modules need **BOOT** held while you pulse **EN/RST**.
 
           ## OTA update (from the portal)
 
-          If your device is already running OpenVent, you can update from a browser without touching USB:
+          If your device is already running DragonVent, you can update from a browser without touching USB:
 
-          1. Load the portal (\`http://OpenVent.local/\` or the AP IP).
+          1. Load the portal (\`http://DragonVent.local/\` or the AP IP).
           2. Scroll to **OTA firmware update** on the System tab.
-          3. Choose \`openvent-${RELEASE_TAG}-ota.bin\` and hit **Upload & flash**.
+          3. Choose \`dragonvent-${RELEASE_TAG}-ota.bin\` and hit **Upload & flash**.
           4. The device writes to the inactive OTA slot, swaps the boot pointer, and reboots into the new version.
 
           ## First boot after full-flash
 
-          The device comes up as **`OpenVent_XXXX`** (WPA2 hotspot, password `987654321`). Join it, the captive portal will pop, and you can enter your home WiFi + Moonraker printer from there. It also advertises on mDNS as **`OpenVent.local`** once it joins your LAN.
+          The device comes up as **`DragonVent_XXXX`** (WPA2 hotspot, password `987654321`). Join it, the captive portal will pop, and you can enter your home WiFi + Moonraker printer from there. It also advertises on mDNS as **`DragonVent.local`** once it joins your LAN.
 
           ## Verify download
 

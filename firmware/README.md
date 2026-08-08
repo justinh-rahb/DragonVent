@@ -1,4 +1,4 @@
-# OpenVent Firmware
+# DragonVent Firmware
 
 ESP-IDF v5.3+ project targeting the classic ESP32 in the Bigtreetech Panda Vent.
 
@@ -39,17 +39,17 @@ is pushed, or by running the "Firmware Release" workflow manually with a tag.
 
 Each release ships two binaries:
 
-- **`openvent-full.bin`** — bootloader + partition table + OTA data +
+- **`dragonvent-full.bin`** — bootloader + partition table + OTA data +
   app, one file. For first-time flashing over USB.
 
   ```sh
   python -m esptool --chip esp32 -p /dev/tty.usbserial-* -b 460800 \
-    write_flash 0x0 openvent-full.bin
+    write_flash 0x0 dragonvent-full.bin
   ```
 
-- **`openvent-ota.bin`** — app only. Upload via the portal's
+- **`dragonvent-ota.bin`** — app only. Upload via the portal's
   **OTA firmware update** form on a device that's already running
-  OpenVent. No USB cable needed.
+  DragonVent. No USB cable needed.
 
 `SHA256SUMS` next to them if you want to verify.
 
@@ -63,18 +63,19 @@ firmware/
 ├── main/
 │   └── app_main.c           # thin orchestrator: init components, route buttons
 └── components/
-    ├── pv_board/            # GPIO pin map — single source of truth
-    ├── pv_motor/            # 30 kHz LEDC PWM + hall ADC state machine (4 groups)
-    ├── pv_button/           # USER + BOOT debouncing, short/long press dispatch
-    ├── pv_status_led/       # user-button LED: off = auto, blink = manual
-    ├── pv_wifi/             # STA + AP fallback, NVS-backed credentials
-    ├── pv_moonraker/        # WebSocket client, subscribes to print_stats + heater_bed
-    ├── pv_policy/           # auto/manual mode, hysteresis-based open/close decision
-    └── pv_portal/           # unified web UI (AP + STA), captive DNS in AP mode
+    ├── dv_board/            # GPIO pin map — single source of truth
+    ├── dv_motor/            # 30 kHz LEDC PWM + hall ADC state machine (4 groups)
+    ├── dv_button/           # USER + BOOT debouncing, short/long press dispatch
+    ├── dv_status_led/       # user-button LED: off = auto, blink = manual
+    ├── dv_policy/           # auto/manual mode, hysteresis-based open/close decision
+    └── dv_portal/           # unified web UI (AP + STA), captive DNS in AP mode
 ```
 
-Each component owns its own task, exposes a thread-safe API, and persists any
-state under the `app_nvs` namespace (stock-firmware-compatible).
+Board-neutral WiFi, source selection, Bambu LAN, Moonraker, and event-log
+services are pinned by exact commit in `main/idf_component.yml` and fetched from
+[`dragon-core`](https://github.com/justinh-rahb/dragon-core). Product-specific
+`dv_*` components remain local for now. Components persist compatible state
+under the `app_nvs` namespace, so this refactor does not wipe existing settings.
 
 ## Flashing the first time
 

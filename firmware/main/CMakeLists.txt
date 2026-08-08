@@ -1,5 +1,6 @@
 idf_component_register(
     SRCS "app_main.c"
     INCLUDE_DIRS "."
-    REQUIRES driver pv_board pv_motor pv_wifi pv_moonraker pv_policy pv_portal pv_button pv_status_led pv_evlog
+    REQUIRES driver dv_board dv_motor dc_wifi dc_source dc_bambu dc_moonraker
+             dv_policy dv_portal dv_button dv_status_led dc_evlog
 )

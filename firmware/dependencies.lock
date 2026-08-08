@@ -8,7 +8,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_bambu
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   dc_evlog:
     component_hash: 65ebe676e8f04de0251ce09408e249f1c7a103d7a164cdb38830564c09a7959d
     dependencies:
@@ -18,7 +18,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_evlog
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   dc_moonraker:
     component_hash: 931336c46df6a4912cc6ffa39a0aa7f286c5da534730d7322864ea0f87029654
     dependencies:
@@ -30,7 +30,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_moonraker
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   dc_source:
     component_hash: 673fa10f33be5721433e83b423fefb4b5c89700c38bbb79440c3e5e690f1c557
     dependencies:
@@ -40,7 +40,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_source
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   dc_ui:
     component_hash: 53341bc49f8f9f06821924170e3019baa91777bf6adcd49d202c71e1df9206e6
     dependencies:
@@ -50,7 +50,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_ui
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   dc_wifi:
     component_hash: 3795588884f20f38cba29ab8cfc74994f51866909a71bf4d0579a19945ce87b9
     dependencies:
@@ -62,7 +62,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_wifi
       type: git
-    version: 1ff30c2c74a4fd08321552ddcceaba4df4b2f352
+    version: f283708268298af1e0e1197b923283c50079f539
   espressif/esp_websocket_client:
     component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
     dependencies:
@@ -94,6 +94,6 @@ direct_dependencies:
 - dc_source
 - dc_ui
 - dc_wifi
-manifest_hash: 5fdb7959032466bc72adabbdb8a9443df341c6c17415ab4309b18d1f215cfcc7
+manifest_hash: 11e6fa166a0ec2ad24834a0bb2b2836237d2846d79ccc5b6e646f07290143607
 target: esp32
 version: 2.0.0

@@ -68,14 +68,22 @@ firmware/
     ├── dv_button/           # USER + BOOT debouncing, short/long press dispatch
     ├── dv_status_led/       # user-button LED: off = auto, blink = manual
     ├── dv_policy/           # auto/manual mode, hysteresis-based open/close decision
-    └── dv_portal/           # unified web UI (AP + STA), captive DNS in AP mode
+    └── dv_portal/           # API-v2 adapter + setup/recovery portal, captive DNS in AP mode
 ```
 
-Board-neutral WiFi, source selection, Bambu LAN, Moonraker, and event-log
+Board-neutral WiFi, source selection, Bambu LAN, Moonraker, event-log, and the
+capability-aware Dragon-family SPA
 services are pinned by exact commit in `main/idf_component.yml` and fetched from
 [`dragon-core`](https://github.com/justinh-rahb/dragon-core). Product-specific
 `dv_*` components remain local for now. Components persist compatible state
 under the `app_nvs` namespace, so this refactor does not wipe existing settings.
+
+In station mode, `/` serves the DragonVent surface from `dc_ui`. The product-local
+adapter exposes `/api/v2/info`, `/api/v2/state`, `/api/v2/command`, and
+`/api/v2/settings`; it translates those requests into `dv_policy` and `dv_motor`
+operations without moving hardware policy into the shared component. The original
+configuration, diagnostics, OTA, and reset UI remains at `/setup` and is still the
+root page in captive-portal mode.
 
 ## Flashing the first time
 

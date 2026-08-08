@@ -4,12 +4,16 @@
 #include "dc_evlog.h"
 #include "dc_moonraker.h"
 #include "dc_source.h"
+#include "dc_ui.h"
 #include "dv_policy.h"
+#include "dv_motor.h"
 #include "dc_wifi.h"
+#include "cJSON.h"
 
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_ota_ops.h"
 
@@ -30,6 +34,7 @@ static const char *TAG = "dv_portal";
 
 static httpd_handle_t s_httpd = NULL;
 static bool           s_ap_mode = false;
+static uint32_t       s_api_revision = 1;
 
 // ---------- URL-encoded form parsing ----------
 
@@ -154,6 +159,36 @@ static const char *target_label(dv_motor_target_t t)
 {
     return t == DV_MOTOR_TARGET_OPEN ? "OPEN"
          : t == DV_MOTOR_TARGET_CLOSED ? "CLOSED" : "STOP";
+}
+
+static const char *target_wire(dv_motor_target_t t)
+{
+    return t == DV_MOTOR_TARGET_OPEN ? "open"
+         : t == DV_MOTOR_TARGET_CLOSED ? "closed" : "stop";
+}
+
+static esp_err_t send_json(httpd_req_t *req, cJSON *root)
+{
+    char *body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (body == NULL) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
+        return ESP_OK;
+    }
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t err = httpd_resp_sendstr(req, body);
+    cJSON_free(body);
+    return err;
+}
+
+static esp_err_t api_error(httpd_req_t *req, const char *status, const char *message)
+{
+    httpd_resp_set_status(req, status);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON_AddStringToObject(root, "error", "invalid_request");
+    cJSON_AddStringToObject(root, "message", message);
+    return send_json(req, root);
 }
 
 // ---------- HTML rendering (chunked) ----------
@@ -664,7 +699,7 @@ static esp_err_t send_ota_section(httpd_req_t *req)
         "</script>");
 }
 
-static esp_err_t handle_root(httpd_req_t *req)
+static esp_err_t handle_setup(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
     send_head(req);
@@ -703,6 +738,211 @@ static esp_err_t handle_root(httpd_req_t *req)
     SEND(req, "</body></html>");
     httpd_resp_send_chunk(req, NULL, 0);   // terminate chunked stream
     return ESP_OK;
+}
+
+// ---------- Dragon family API v2 adapter ----------
+
+static void add_device_id(cJSON *root)
+{
+    uint8_t mac[6] = {0};
+    char id[24] = "dragonvent";
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        snprintf(id, sizeof(id), "dragonvent-%02x%02x%02x",
+                 mac[3], mac[4], mac[5]);
+    }
+    cJSON_AddStringToObject(root, "device_id", id);
+}
+
+static cJSON *make_api_state(void)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON_AddStringToObject(root, "project", "dragonvent");
+    cJSON_AddNumberToObject(root, "state_revision", s_api_revision);
+    cJSON_AddStringToObject(root, "firmware", app->version);
+    add_device_id(root);
+    cJSON_AddStringToObject(root, "mode",
+        dv_policy_get_mode() == DV_POLICY_MODE_AUTO ? "auto" : "manual");
+
+    int groups = dv_motor_active_groups();
+    bool running = false;
+    for (int g = 0; g < groups; ++g) running |= dv_motor_is_running(g);
+    cJSON *vent = cJSON_AddObjectToObject(root, "vent");
+    cJSON_AddStringToObject(vent, "target", target_wire(dv_policy_get_target()));
+    cJSON_AddBoolToObject(vent, "running", running);
+    cJSON_AddNumberToObject(vent, "active_groups", groups);
+
+    dc_ctl_source_t source = dc_source_get();
+    cJSON *printer = cJSON_AddObjectToObject(root, "printer");
+    cJSON_AddStringToObject(printer, "source", dc_source_str(source));
+    bool connected = false;
+    const char *printer_state = "unknown";
+    float bed = NAN;
+    const char *material = "";
+    if (source == DC_SRC_KLIPPER) {
+        dc_moonraker_status_t mk = {0};
+        dc_moonraker_get_status(&mk);
+        connected = mk.state == DC_MK_SUBSCRIBED;
+        printer_state = dc_printer_state_str(mk.printer);
+        bed = mk.bed_temp;
+        material = mk.material;
+    } else if (source == DC_SRC_BAMBU) {
+        dc_bambu_status_t bb = {0};
+        dc_bambu_get_status(&bb);
+        connected = bb.connected;
+        printer_state = bb.printing ? "printing" : "idle";
+        bed = bb.bed_temp;
+        material = bb.filament;
+    } else if (source == DC_SRC_NONE) {
+        printer_state = "standalone";
+    }
+    cJSON_AddBoolToObject(printer, "connected", connected);
+    cJSON_AddStringToObject(printer, "state", printer_state);
+    if (isnan(bed)) cJSON_AddNullToObject(printer, "bed_temperature_c");
+    else cJSON_AddNumberToObject(printer, "bed_temperature_c", bed);
+    cJSON_AddStringToObject(printer, "material", material);
+
+    float open_c = 45.0f, close_c = 35.0f;
+    dv_policy_get_thresholds(&open_c, &close_c);
+    cJSON *policy = cJSON_AddObjectToObject(root, "policy");
+    cJSON_AddNumberToObject(policy, "bed_open_c", open_c);
+    cJSON_AddNumberToObject(policy, "bed_close_c", close_c);
+
+    cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
+    cJSON_AddStringToObject(wifi, "state", wifi_label(dc_wifi_state()));
+    if (dc_wifi_state() == DC_WIFI_STATE_STA_CONNECTED) {
+        esp_netif_t *sta = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_ip_info_t info = {0};
+        if (sta && esp_netif_get_ip_info(sta, &info) == ESP_OK) {
+            char ip[20];
+            snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
+            cJSON_AddStringToObject(wifi, "ip", ip);
+        }
+        wifi_ap_record_t ap;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            cJSON_AddNumberToObject(wifi, "rssi", ap.rssi);
+        }
+    }
+    return root;
+}
+
+static esp_err_t handle_spa(httpd_req_t *req)
+{
+    dc_ui_asset_t asset = dc_ui_spa_asset();
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)asset.data, asset.len);
+}
+
+static esp_err_t handle_api_info(httpd_req_t *req)
+{
+    const esp_app_desc_t *app = esp_app_get_description();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON_AddStringToObject(root, "firmware", app->version);
+    cJSON_AddStringToObject(root, "project", "dragonvent");
+    add_device_id(root);
+    cJSON *caps = cJSON_AddArrayToObject(root, "capabilities");
+    cJSON_AddItemToArray(caps, cJSON_CreateString("vent_manual"));
+    cJSON_AddItemToArray(caps, cJSON_CreateString("vent_auto"));
+    cJSON_AddItemToArray(caps, cJSON_CreateString("source_status"));
+    cJSON_AddItemToArray(caps, cJSON_CreateString("polling"));
+    cJSON *ui = cJSON_AddObjectToObject(root, "ui");
+    cJSON_AddNumberToObject(ui, "schema", 1);
+    cJSON_AddStringToObject(ui, "product", "dragonvent");
+    cJSON_AddStringToObject(ui, "display_name", "DragonVent");
+    return send_json(req, root);
+}
+
+static esp_err_t handle_api_state(httpd_req_t *req)
+{
+    return send_json(req, make_api_state());
+}
+
+static cJSON *recv_json(httpd_req_t *req)
+{
+    char body[512];
+    if (recv_body(req, body, sizeof(body)) < 0) return NULL;
+    return cJSON_Parse(body);
+}
+
+static esp_err_t handle_api_command(httpd_req_t *req)
+{
+    cJSON *body = recv_json(req);
+    cJSON *command = body ? cJSON_GetObjectItemCaseSensitive(body, "command") : NULL;
+    cJSON *name = command ? cJSON_GetObjectItemCaseSensitive(command, "name") : NULL;
+    if (!cJSON_IsString(name)) {
+        cJSON_Delete(body);
+        return api_error(req, "400 Bad Request", "missing command name");
+    }
+    esp_err_t err = ESP_OK;
+    if (strcmp(name->valuestring, "auto") == 0) {
+        err = dv_policy_set_mode(DV_POLICY_MODE_AUTO);
+    } else if (strcmp(name->valuestring, "manual") == 0) {
+        cJSON *target = cJSON_GetObjectItemCaseSensitive(command, "target");
+        if (!cJSON_IsString(target) ||
+            (strcmp(target->valuestring, "open") != 0 &&
+             strcmp(target->valuestring, "closed") != 0)) {
+            cJSON_Delete(body);
+            return api_error(req, "400 Bad Request", "manual target must be open or closed");
+        }
+        dv_motor_target_t t = strcmp(target->valuestring, "open") == 0
+                                ? DV_MOTOR_TARGET_OPEN : DV_MOTOR_TARGET_CLOSED;
+        // Enter MANUAL first so set_manual_target applies the motor target
+        // immediately instead of waiting for the policy task's next tick.
+        err = dv_policy_set_mode(DV_POLICY_MODE_MANUAL);
+        if (err == ESP_OK) err = dv_policy_set_manual_target(t);
+    } else {
+        cJSON_Delete(body);
+        return api_error(req, "400 Bad Request", "unknown command");
+    }
+    cJSON_Delete(body);
+    if (err != ESP_OK) return api_error(req, "409 Conflict", esp_err_to_name(err));
+    ++s_api_revision;
+    dc_evlog_add("api: mode=%s target=%s",
+                 dv_policy_get_mode() == DV_POLICY_MODE_AUTO ? "auto" : "manual",
+                 target_wire(dv_policy_get_target()));
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddItemToObject(reply, "state", make_api_state());
+    return send_json(req, reply);
+}
+
+static esp_err_t handle_api_settings_get(httpd_req_t *req)
+{
+    float open_c = 45.0f, close_c = 35.0f;
+    dv_policy_get_thresholds(&open_c, &close_c);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON_AddNumberToObject(root, "bed_open_c", open_c);
+    cJSON_AddNumberToObject(root, "bed_close_c", close_c);
+    return send_json(req, root);
+}
+
+static esp_err_t handle_api_settings_post(httpd_req_t *req)
+{
+    cJSON *body = recv_json(req);
+    cJSON *open = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_open_c") : NULL;
+    cJSON *close = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_close_c") : NULL;
+    if (!cJSON_IsNumber(open) || !cJSON_IsNumber(close)) {
+        cJSON_Delete(body);
+        return api_error(req, "400 Bad Request", "bed_open_c and bed_close_c are required");
+    }
+    float open_c = (float)open->valuedouble;
+    float close_c = (float)close->valuedouble;
+    cJSON_Delete(body);
+    if (!isfinite(open_c) || !isfinite(close_c) || close_c < 0.0f || open_c > 120.0f) {
+        return api_error(req, "400 Bad Request", "thresholds must be finite and between 0 and 120 C");
+    }
+    esp_err_t err = dv_policy_set_thresholds(open_c, close_c);
+    if (err != ESP_OK) {
+        return api_error(req, "400 Bad Request", "open temperature must be above close temperature");
+    }
+    ++s_api_revision;
+    cJSON *reply = cJSON_CreateObject();
+    cJSON_AddItemToObject(reply, "state", make_api_state());
+    return send_json(req, reply);
 }
 
 // ---------- POST handlers ----------
@@ -1145,15 +1385,23 @@ esp_err_t dv_portal_start(void)
 
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.uri_match_fn = httpd_uri_match_wildcard;
-    // Default max_uri_handlers is 8 — we register 13 endpoints in STA and 14
-    // in AP mode (including /* catchall for captive-portal detection). If
+    // Default max_uri_handlers is 8 — we register the setup/recovery routes plus
+    // the Dragon family API v2 adapter and, in AP mode, the captive-portal
+    // catch-all. If
     // this is too low the last-registered handlers silently fail with
     // "no slots left" and captive portal stops firing.
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 24;
     esp_err_t err = httpd_start(&s_httpd, &cfg);
     if (err != ESP_OK) return err;
 
-    httpd_uri_t root  = { .uri = "/",           .method = HTTP_GET,  .handler = handle_root };
+    httpd_uri_t root  = { .uri = "/",           .method = HTTP_GET,
+                          .handler = s_ap_mode ? handle_setup : handle_spa };
+    httpd_uri_t setup = { .uri = "/setup",      .method = HTTP_GET,  .handler = handle_setup };
+    httpd_uri_t info  = { .uri = "/api/v2/info", .method = HTTP_GET, .handler = handle_api_info };
+    httpd_uri_t state = { .uri = "/api/v2/state", .method = HTTP_GET, .handler = handle_api_state };
+    httpd_uri_t api_cmd = { .uri = "/api/v2/command", .method = HTTP_POST, .handler = handle_api_command };
+    httpd_uri_t settings_get = { .uri = "/api/v2/settings", .method = HTTP_GET, .handler = handle_api_settings_get };
+    httpd_uri_t settings_post = { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = handle_api_settings_post };
     httpd_uri_t wifi  = { .uri = "/wifi",       .method = HTTP_POST, .handler = handle_wifi_post };
     httpd_uri_t scan  = { .uri = "/scan",       .method = HTTP_POST, .handler = handle_scan_post };
     httpd_uri_t src   = { .uri = "/source",     .method = HTTP_POST, .handler = handle_source_post };
@@ -1167,6 +1415,12 @@ esp_err_t dv_portal_start(void)
     httpd_uri_t reset = { .uri = "/factory_reset", .method = HTTP_POST, .handler = handle_factory_reset_post };
     httpd_uri_t cm    = { .uri = "/cm",          .method = HTTP_GET,  .handler = handle_tasmota_cm };
     httpd_register_uri_handler(s_httpd, &root);
+    httpd_register_uri_handler(s_httpd, &setup);
+    httpd_register_uri_handler(s_httpd, &info);
+    httpd_register_uri_handler(s_httpd, &state);
+    httpd_register_uri_handler(s_httpd, &api_cmd);
+    httpd_register_uri_handler(s_httpd, &settings_get);
+    httpd_register_uri_handler(s_httpd, &settings_post);
     httpd_register_uri_handler(s_httpd, &wifi);
     httpd_register_uri_handler(s_httpd, &scan);
     httpd_register_uri_handler(s_httpd, &src);

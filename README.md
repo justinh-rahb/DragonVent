@@ -12,7 +12,8 @@ Working today (OpenVent v0.3.3 baseline plus the in-development DragonVent refac
 
 - **Automatic vent control** — six-state printer model (idle / preparing / printing / paused / complete / error), material-aware policy (PLA opens for cooling, ABS/ASA seals for heat retention), bed-temp hysteresis for residual heat
 - **Stock-parity hall sensing** — per-boot ADC line-fitting calibration with calibrated-millivolt thresholds, matching stock's reproduction contract
-- **Captive portal WiFi setup** — same UX as the stock firmware, show-password toggles, dark mode
+- **Dragon-family dashboard** — responsive DragonVent-flavoured control UI for live vent/source state, manual open/close, and automatic threshold policy
+- **Captive portal WiFi setup** — recovery-safe setup remains available at `/setup` (and as the AP-mode root), with show-password toggles and dark mode
 - **Moonraker integration** — WebSocket ingest with `webhooks` / `print_stats` / `virtual_sdcard` / `heater_bed` / `extruder` / optional chamber + `save_variables` (for material), re-subscribes on Klippy restart
 - **Bambu LAN integration (experimental)** — optional read-only MQTT source using the printer's LAN access code; DragonVent never sends printer-control commands. The shared client and portal path build cleanly, but still need validation against a real Bambu printer
 - **Single-source binding** — select Klipper, Bambu LAN, or standalone mode; only the selected printer client starts

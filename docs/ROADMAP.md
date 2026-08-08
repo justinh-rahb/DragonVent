@@ -42,7 +42,7 @@ Verified against tester OldGuyMeltsPlastic's retail 2-vent kit on
 - [x] Widened CLOSED band to survive the non-monotonic mid-travel hump
 
 ### Portal Parity (Web UI)
-- [x] Tabbed layout (Home / WiFi / Printer / System)
+- [x] Unified Dragon-family SPA with integrated schema-driven device setup
 - [x] Persistent status card (fw version, WiFi, Moonraker, printer state, bed, target, mode)
 - [x] Quick Open / Close buttons
 - [x] Dark mode via `prefers-color-scheme`
@@ -193,7 +193,7 @@ the LED.
                      │        (auto/manual)      │           + hall ADC
                      │              │            │
                      ▼              ▼            │
-               dv_status_led    dv_portal ◄──────┘  (web UI in both AP + STA)
+               dv_status_led    dv_portal ◄──────┘  (product API adapter/callbacks)
                (GPIO 27)             │
                                      ▼
                                   dc_wifi (dragon-core STA + AP fallback)
@@ -202,6 +202,7 @@ the LED.
 ```
 
 Every long-lived component owns its own FreeRTOS task and exposes a
-thread-safe API. Shared state (WiFi/Moonraker/policy) lives in the
+thread-safe API. The shared SPA and `dc_portal` management plane run in both AP
+and station modes; product state (WiFi/Moonraker/policy) lives in the
 `app_nvs` NVS namespace so it survives reboots and is compatible with
 the stock firmware's layout.

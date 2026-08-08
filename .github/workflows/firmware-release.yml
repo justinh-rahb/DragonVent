@@ -28,7 +28,8 @@ jobs:
         with:
           esp_idf_version: v5.3.1
           target: esp32
-          path: firmware
+          path: .
+          command: tools/idf-build.sh firmware esp32 build
 
       - name: Merge into a single flashable image
         uses: espressif/esp-idf-ci-action@v1
@@ -72,7 +73,7 @@ jobs:
           ## Which file do I need?
 
           - **\`dragonvent-${RELEASE_TAG}-full.bin\`** — first-time flash of a fresh module. Contains bootloader + partition table + OTA data + app, flashed with \`esptool\` over USB.
-          - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload via the portal's **OTA firmware update** form.
+          - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload from **Device setup → Maintenance** in the shared web UI.
 
           Prefer using the [\`dragonvent\` helper](https://github.com/justinh-rahb/OpenVent/blob/master/scripts/dragonvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
 
@@ -106,18 +107,18 @@ jobs:
 
           Replace \`PORT\` with your serial device (\`/dev/tty.usbserial-0001\` on macOS, \`/dev/ttyUSB0\` on Linux, \`COM3\` on Windows). Most USB devkits enter download mode automatically; bare modules need **BOOT** held while you pulse **EN/RST**.
 
-          ## OTA update (from the portal)
+          ## OTA update (from the web UI)
 
           If your device is already running DragonVent, you can update from a browser without touching USB:
 
-          1. Load the portal (\`http://DragonVent.local/\` or the AP IP).
-          2. Scroll to **OTA firmware update** on the System tab.
-          3. Choose \`dragonvent-${RELEASE_TAG}-ota.bin\` and hit **Upload & flash**.
+          1. Load the DragonVent UI (\`http://DragonVent.local/\` or the AP IP).
+          2. Open **Settings → Device setup**, then find **Maintenance**.
+          3. Choose \`dragonvent-${RELEASE_TAG}-ota.bin\` and select **Upload firmware**.
           4. The device writes to the inactive OTA slot, swaps the boot pointer, and reboots into the new version.
 
           ## First boot after full-flash
 
-          The device comes up as **`DragonVent_XXXX`** (WPA2 hotspot, password `987654321`). Join it, the captive portal will pop, and you can enter your home WiFi + Moonraker printer from there. It also advertises on mDNS as **`DragonVent.local`** once it joins your LAN.
+          The device comes up as **`DragonVent_XXXX`** (WPA2 hotspot, password `987654321`). Join it; the same DragonVent SPA opens in captive setup mode so you can enter home WiFi and printer-source settings. It advertises on mDNS as **`DragonVent.local`** once it joins your LAN.
 
           ## Verify download
 

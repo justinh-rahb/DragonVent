@@ -13,14 +13,14 @@ Working today (OpenVent v0.3.3 baseline plus the in-development DragonVent refac
 - **Automatic vent control** — six-state printer model (idle / preparing / printing / paused / complete / error), material-aware policy (PLA opens for cooling, ABS/ASA seals for heat retention), bed-temp hysteresis for residual heat
 - **Stock-parity hall sensing** — per-boot ADC line-fitting calibration with calibrated-millivolt thresholds, matching stock's reproduction contract
 - **Dragon-family dashboard** — responsive DragonVent-flavoured control UI for live vent/source state, manual open/close, and automatic threshold policy
-- **Captive portal WiFi setup** — recovery-safe setup remains available at `/setup` (and as the AP-mode root), with show-password toggles and dark mode
+- **Unified browser management** — the shared Dragon SPA is used on the LAN and on the captive setup AP, with integrated Wi-Fi, printer-source, OTA, logs, and reset controls
 - **Moonraker integration** — WebSocket ingest with `webhooks` / `print_stats` / `virtual_sdcard` / `heater_bed` / `extruder` / optional chamber + `save_variables` (for material), re-subscribes on Klippy restart
 - **Bambu LAN integration (experimental)** — optional read-only MQTT source using the printer's LAN access code; DragonVent never sends printer-control commands. The shared client and portal path build cleanly, but still need validation against a real Bambu printer
 - **Single-source binding** — select Klipper, Bambu LAN, or standalone mode; only the selected printer client starts
 - **Tasmota-compatible power endpoint** — `POWER_ON vent` / `POWER_OFF vent` from any Klipper macro, Mainsail/Fluidd Power-panel toggle for free
 - **Configurable thresholds** — bed OPEN/CLOSE °C editable in the portal, persisted to NVS
 - **Physical button control** — auto/manual mode toggle, manual vent override, manual target persists across reboots
-- **Web configuration UI** — Home / WiFi / Printer / Log / System tabs with live event log
+- **Schema-driven setup** — product-specific source and vent-policy fields are rendered by the common SPA instead of a second firmware page
 - **OTA firmware updates** — flash new firmware from the web UI
 
 Deferred:
@@ -84,8 +84,8 @@ each arrival.
 - ✅ Firmware flashes on real Panda Vent hardware; `dragonvent` script for
   backup / restore / install works end-to-end
 - ✅ WiFi station + AP fallback, mDNS `DragonVent.local`, captive portal
-- ✅ Portal: tabbed UI (Home / WiFi / Printer / Log / System), live event
-  log, WiFi setup, Moonraker config, OTA upload, factory reset, dark mode
+- ✅ Unified SPA management: live vent controls plus schema-driven Wi-Fi,
+  printer-source, fallback-AP, event-log, OTA, and factory-reset setup
 - ✅ Tasmota-compatible power endpoint for gcode-macro vent control
 - ⬜ Deferred to 0.4.x: WS2812 RGB status lighting
 

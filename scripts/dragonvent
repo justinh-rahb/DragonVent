@@ -112,7 +112,11 @@ cmd_restore() {
 download_release() {
     local tag="$1" out="$2"
     if command -v gh >/dev/null 2>&1; then
-        # New tagged name first, fall back to the original bare name.
+        # Current name first ("factory"), then the older "full" name, then the
+        # original bare names. The rename lets the shared SPA's update check pick
+        # the OTA asset unambiguously (it excludes assets containing "factory").
+        gh release download "$tag" --repo "$REPO" \
+            --pattern "dragonvent-${tag}-factory.bin" --output "$out" --clobber 2>/dev/null && return 0
         gh release download "$tag" --repo "$REPO" \
             --pattern "dragonvent-${tag}-full.bin" --output "$out" --clobber 2>/dev/null && return 0
         gh release download "$tag" --repo "$REPO" \
@@ -122,11 +126,13 @@ download_release() {
         gh release download "$tag" --repo "$REPO" \
             --pattern 'openvent-full.bin' --output "$out" --clobber
     else
+        local base_factory="dragonvent-${tag}-factory.bin"
         local base_new="dragonvent-${tag}-full.bin"
         local base_old="dragonvent-full.bin"
         local legacy_new="openvent-${tag}-full.bin"
         local legacy_old="openvent-full.bin"
         local candidates=(
+            "https://github.com/$REPO/releases/download/$tag/$base_factory"
             "https://github.com/$REPO/releases/download/$tag/$base_new"
             "https://github.com/$REPO/releases/download/$tag/$base_old"
             "https://github.com/$REPO/releases/download/$tag/$legacy_new"

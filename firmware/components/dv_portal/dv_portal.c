@@ -174,6 +174,16 @@ static esp_err_t info_get(httpd_req_t *req)
     cJSON_AddNumberToObject(ui, "schema", 1);
     cJSON_AddStringToObject(ui, "product", "dragonvent");
     cJSON_AddStringToObject(ui, "display_name", "DragonVent");
+    // Opt into the shared SPA's update check (dragon-core >= v0.7.0). It asks
+    // GitHub for the latest stable release of this repo and, when newer, shows
+    // the version, the expected SHA-256 and a download link — it never
+    // auto-flashes. The SPA picks the asset by prefix, excluding any name
+    // containing "factory", so this resolves to dragonvent-<tag>-ota.bin (the
+    // web-uploadable app image) and never the full USB image. Local/dev builds
+    // skip the request entirely, so this is silent until a tagged build runs.
+    cJSON *update = cJSON_AddObjectToObject(root, "update");
+    cJSON_AddStringToObject(update, "repo", "justinh-rahb/DragonVent");
+    cJSON_AddStringToObject(update, "asset_prefix", "dragonvent-");
     return send_json(req, root);
 }
 

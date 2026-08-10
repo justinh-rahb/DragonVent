@@ -17,7 +17,6 @@ Working today (OpenVent v0.3.3 baseline plus the in-development DragonVent refac
 - **Moonraker integration** — WebSocket ingest with `webhooks` / `print_stats` / `virtual_sdcard` / `heater_bed` / `extruder` / optional chamber + `save_variables` (for material), re-subscribes on Klippy restart
 - **Bambu LAN integration (experimental)** — optional read-only MQTT source using the printer's LAN access code; DragonVent never sends printer-control commands. The shared client and portal path build cleanly, but still need validation against a real Bambu printer
 - **Single-source binding** — select Klipper, Bambu LAN, or standalone mode; only the selected printer client starts
-- **Tasmota-compatible power endpoint** — `POWER_ON vent` / `POWER_OFF vent` from any Klipper macro, Mainsail/Fluidd Power-panel toggle for free
 - **Configurable thresholds** — bed OPEN/CLOSE °C editable in the portal, persisted to NVS
 - **Physical button control** — auto/manual mode toggle, manual vent override, manual target persists across reboots
 - **Schema-driven setup** — product-specific source and vent-policy fields are rendered by the common SPA instead of a second firmware page
@@ -86,7 +85,6 @@ each arrival.
 - ✅ WiFi station + AP fallback, mDNS `DragonVent.local`, captive portal
 - ✅ Unified SPA management: live vent controls plus schema-driven Wi-Fi,
   printer-source, fallback-AP, event-log, OTA, and factory-reset setup
-- ✅ Tasmota-compatible power endpoint for gcode-macro vent control
 - ⬜ Deferred to 0.4.x: WS2812 RGB status lighting
 
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/wildtang3nt)

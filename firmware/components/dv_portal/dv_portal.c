@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "dv_portal.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "cJSON.h"
 #include "dc_bambu.h"
@@ -322,40 +320,6 @@ static esp_err_t settings_post(httpd_req_t *req)
     return send_json(req, reply);
 }
 
-static void url_decode(char *text)
-{
-    char *out = text;
-    for (char *p = text; *p; ++p) {
-        if (*p == '+') *out++ = ' ';
-        else if (*p == '%' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
-            char hex[3] = { p[1], p[2], 0 }; *out++ = (char)strtol(hex, NULL, 16); p += 2;
-        } else *out++ = *p;
-    }
-    *out = 0;
-}
-
-static esp_err_t tasmota_get(httpd_req_t *req)
-{
-    char query[128] = {0}, command[32] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
-        httpd_query_key_value(query, "cmnd", command, sizeof(command));
-    url_decode(command);
-    const char *arg = command;
-    if (!strncasecmp(arg, "Power", 5)) { arg += 5; while (isdigit((unsigned char)*arg)) ++arg; while (*arg == ' ') ++arg; }
-    dv_motor_target_t current = dv_policy_get_target();
-    bool on = current == DV_MOTOR_TARGET_OPEN;
-    if (!strcasecmp(arg, "ON")) on = true;
-    else if (!strcasecmp(arg, "OFF")) on = false;
-    else if (!strcasecmp(arg, "TOGGLE")) on = !on;
-    else goto respond;
-    dv_policy_set_mode(DV_POLICY_MODE_MANUAL);
-    dv_policy_set_manual_target(on ? DV_MOTOR_TARGET_OPEN : DV_MOTOR_TARGET_CLOSED);
-    dc_evlog_add("tasmota: POWER %s", on ? "ON" : "OFF");
-respond:
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, on ? "{\"POWER\":\"ON\"}" : "{\"POWER\":\"OFF\"}");
-}
-
 static cJSON *field(cJSON *fields, const char *key, const char *label, const char *type, const char *value)
 {
     cJSON *item = cJSON_CreateObject();
@@ -556,7 +520,6 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/command", .method = HTTP_POST, .handler = command_post },
         { .uri = "/api/v2/settings", .method = HTTP_GET, .handler = settings_get },
         { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = settings_post },
-        { .uri = "/cm", .method = HTTP_GET, .handler = tasmota_get },
     };
     const dc_portal_config_t config = {
         .product = "dragonvent", .display_name = "DragonVent",

@@ -1,4 +1,4 @@
-# OpenVent Roadmap
+# DragonVent Roadmap
 
 Custom firmware for the Bigtreetech Panda Vent hardware that replaces the
 stock Bambu Lab MQTT integration with Moonraker/Klipper support.
@@ -21,9 +21,9 @@ Verified against tester OldGuyMeltsPlastic's retail 2-vent kit on
 2026-07-10 — 10× open/close cycles with no ESP crash.
 
 ### Vent Control via Moonraker
-- [x] Connect to Moonraker via WebSocket (`pv_moonraker`)
+- [x] Connect to Moonraker via shared `dragon-core` WebSocket client (`dc_moonraker`)
 - [x] Subscribe to `print_stats` and `heater_bed` objects
-- [x] Open vent when bed is heated / printing is active (`pv_policy`, AUTO mode)
+- [x] Open vent when bed is heated / printing is active (`dv_policy`, AUTO mode)
 - [x] Close vent when bed cools down / printer is idle (35 °C / 45 °C hysteresis)
 - [x] Auto/manual mode toggle via physical button (GPIO 12)
 - [x] Long-press button to switch between auto and manual mode
@@ -33,7 +33,7 @@ Verified against tester OldGuyMeltsPlastic's retail 2-vent kit on
 - [x] Web page to enter SSID + password
 - [x] Credentials stored in NVS
 - [x] Auto-reconnect on boot
-- [x] mDNS `OpenVent.local`
+- [x] mDNS `DragonVent.local`
 
 ### Motor + Hall
 - [x] LEDC PWM forward/reverse with fade-based soft-start
@@ -42,7 +42,7 @@ Verified against tester OldGuyMeltsPlastic's retail 2-vent kit on
 - [x] Widened CLOSED band to survive the non-monotonic mid-travel hump
 
 ### Portal Parity (Web UI)
-- [x] Tabbed layout (Home / WiFi / Printer / System)
+- [x] Unified Dragon-family SPA with integrated schema-driven device setup
 - [x] Persistent status card (fw version, WiFi, Moonraker, printer state, bed, target, mode)
 - [x] Quick Open / Close buttons
 - [x] Dark mode via `prefers-color-scheme`
@@ -54,7 +54,7 @@ Verified against tester OldGuyMeltsPlastic's retail 2-vent kit on
 
 - **RGB status LEDs** are not driven yet. Deferred beyond 0.3.x — see
   [Phase 4](#phase-4--rgb-lighting-deferred). When it lands, WS2812 /
-  RMT init must sequence after `pv_motor_init` to keep the stock ADC
+  RMT init must sequence after `dv_motor_init` to keep the stock ADC
   ordering invariant intact.
 - ~~Hall thresholds hard-coded in raw counts~~ — fixed in v0.3.3, now
   uses stock's calibrated mV thresholds. See
@@ -70,11 +70,11 @@ to prove it works but ignores everything else Klipper knows. Goal for
 data to make smarter open/close decisions — including material-aware
 behavior (the tester's core ask).
 
-### Moonraker ingest expansion (`pv_moonraker`)
+### Moonraker ingest expansion (`dc_moonraker`)
 - [ ] Expand the initial subscribe: add `virtual_sdcard`, `webhooks`,
       `display_status`, `extruder`, and optional `heater_generic chamber`
       alongside the existing `print_stats` + `heater_bed`
-- [ ] Expose a `pv_printer_state_t` enum instead of a bare `printing`
+- [x] Consume the shared `dc_printer_state_t` enum instead of a bare `printing`
       bool — one of `IDLE`, `PREPARING`, `PRINTING`, `PAUSED`, `COMPLETE`,
       `ERROR` (mirrors the six-state model stock uses on the Bambu side)
 - [ ] Track `webhooks.state` so Klipper shutdown / firmware-restart shows
@@ -93,10 +93,10 @@ behavior (the tester's core ask).
 - [ ] Fallback rule when material is unknown (probably: current
       bed-temperature hysteresis — what we do today)
 
-### Smarter auto policy (`pv_policy`)
-- [ ] Consume `pv_printer_state_t` — `COMPLETE` should keep the vent
-      open while the chamber is still hot (residual-heat handling),
-      `ERROR` should hold current state
+### Smarter auto policy (`dv_policy`)
+- [x] Consume `dc_printer_state_t` — `COMPLETE` keeps the vent open while
+      the bed remains above the close threshold, and `ERROR` holds the current
+      state
 - [ ] Chamber-temp override when `heater_generic chamber` is present
       (Voron-style enclosures)
 - [ ] Manual-mode target survives reboot (currently reset on power cycle)
@@ -105,7 +105,7 @@ behavior (the tester's core ask).
 - [ ] Home tab shows printer state (with the six-state label), material,
       progress %, chamber temp when available
 - [ ] Printer tab: material-rule editor, threshold sliders
-- [ ] Log/diagnostic tab that mirrors what `openvent-diag` sees — the
+- [ ] Log/diagnostic tab that mirrors what `dragonvent-diag` sees — the
       hall raw + state stream, motor drive events, Moonraker connection
       health
 
@@ -113,7 +113,7 @@ behavior (the tester's core ask).
 - [ ] All of the above tested on local devkit for logic correctness
 - [ ] Full print cycle run on tester's real hardware — PLA and ABS at
       minimum, ideally with a paused / resumed print thrown in
-- [ ] `openvent-diag` capture across a whole print, shared for review
+- [ ] `dragonvent-diag` capture across a whole print, shared for review
 
 ## Phase 3 — Hall Sensor Calibration Parity — ✅ shipped in v0.3.3
 
@@ -138,10 +138,10 @@ v0.3.3 restores stock parity behind a Ghidra-verified spec:
       bounds: OPEN 640–960, CLOSED 1360–1680, past-closed 2080–2450.
       Config-detect bands too (1900–2400 mV → 4 groups,
       1100–1700 mV → 2 groups, <200 mV → 0)
-- [x] Calibration + channels initialised inside `pv_motor_init` before
+- [x] Calibration + channels initialised inside `dv_motor_init` before
       LEDC or any WS2812 code exists. WS2812 driver doesn't ship yet
       (Phase 4), but when it lands it must sequence after
-      `pv_motor_init` to preserve the invariant.
+      `dv_motor_init` to preserve the invariant.
 - [x] Firmware-transparent: no user config change needed, existing
       NVS still valid, arrival debounce and gave-up flag from v0.2.6
       retained as belt-and-braces
@@ -160,7 +160,7 @@ sketch of what's needed:
 
 > **Ordering invariant** — WS2812 GPIOs (4 / 14) are ADC2 CH0 / CH6.
 > Stock initialises ADC1 + line-fitting cali *before* creating any RMT
-> channel; OpenVent's `pv_motor_init` also runs first, and the RGB
+> channel; DragonVent's `dv_motor_init` also runs first, and the RGB
 > component when added must be scheduled after it in `app_main`. See
 > [`adc-calibration-spec.md`](adc-calibration-spec.md) §"ADC2 and the
 > WS2812 failure" — this ordering is why v0.2.4 latch-red and hangs
@@ -184,24 +184,25 @@ the LED.
 
 ```
                     ┌─────────────────────────────┐
-    printer ─── ws ──┤  pv_moonraker  (WS client)  │
+    printer ─── ws ──┤  dc_moonraker  (dragon-core)│
                      │  state, temps, material     │
                      └──────────┬──────────────────┘
                                 │ status
                                 ▼
-    button ──►  pv_button ──►  pv_policy ──►  pv_motor  ──► 4x DC motor
+    button ──►  dv_button ──►  dv_policy ──►  dv_motor  ──► 4x DC motor
                      │        (auto/manual)      │           + hall ADC
                      │              │            │
                      ▼              ▼            │
-               pv_status_led    pv_portal ◄──────┘  (web UI in both AP + STA)
+               dv_status_led    dv_portal ◄──────┘  (product API adapter/callbacks)
                (GPIO 27)             │
                                      ▼
-                                  pv_wifi (STA + AP fallback)
+                                  dc_wifi (dragon-core STA + AP fallback)
 
-    pv_board = pin definitions shared by every component
+    dv_board = pin definitions shared by every component
 ```
 
 Every long-lived component owns its own FreeRTOS task and exposes a
-thread-safe API. Shared state (WiFi/Moonraker/policy) lives in the
+thread-safe API. The shared SPA and `dc_portal` management plane run in both AP
+and station modes; product state (WiFi/Moonraker/policy) lives in the
 `app_nvs` NVS namespace so it survives reboots and is compatible with
 the stock firmware's layout.

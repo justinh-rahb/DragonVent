@@ -1,0 +1,110 @@
+dependencies:
+  dc_bambu:
+    component_hash: 35765046c5d5c8675fedf8d28cad0a4b474247430000c8dfcfbea4531b17de40
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_bambu
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_evlog:
+    component_hash: 65ebe676e8f04de0251ce09408e249f1c7a103d7a164cdb38830564c09a7959d
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_evlog
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_moonraker:
+    component_hash: 6cb4d2d87343933077fd12b83bc072ea038e95ae9f2b1485efe78577f2aef3bc
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    - name: espressif/esp_websocket_client
+      version: ^1.3.0
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_moonraker
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_portal:
+    component_hash: df0af5af3a51ad88f25d0972aca1043e1849e80ec66837647f1d7950a0b1e61f
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_portal
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_source:
+    component_hash: 673fa10f33be5721433e83b423fefb4b5c89700c38bbb79440c3e5e690f1c557
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_source
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_ui:
+    component_hash: 3e37d04b8acd16843a3e0e89d7a8475f2fc7d2c3684bdcd21ad7a3686dadff90
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_ui
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  dc_wifi:
+    component_hash: b373c30769c47bc9eb2d7f65b33ab95659758fbc8e1b63cd3f645d7f97301517
+    dependencies:
+    - name: idf
+      version: '>=5.3'
+    - name: espressif/mdns
+      version: ^1.4.0
+    source:
+      git: https://github.com/justinh-rahb/dragon-core.git
+      path: components/dc_wifi
+      type: git
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
+  espressif/esp_websocket_client:
+    component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.0
+  espressif/mdns:
+    component_hash: e81ca7a7f53ea34e78274df054da692c272e1315572876b237b1748e267c013b
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.11.3
+  idf:
+    source:
+      type: idf
+    version: 5.3.1
+direct_dependencies:
+- dc_bambu
+- dc_evlog
+- dc_moonraker
+- dc_portal
+- dc_source
+- dc_ui
+- dc_wifi
+manifest_hash: 7ebbab190e0d669e2bc628af1b440772b05db3bfe1acf90effa1962e1bec1f77
+target: esp32
+version: 2.0.0

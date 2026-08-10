@@ -154,7 +154,7 @@ pattern.
 
 - Prior hardware audit: [`docs/HARDWARE_ANALYSIS.md`](../HARDWARE_ANALYSIS.md)
 - Roadmap Phase 3 context: [`docs/ROADMAP.md`](../ROADMAP.md#phase-3--hall-sensor-calibration-parity)
-- OpenVent's current hall code (raw counts, widened bands): [`firmware/components/pv_motor/pv_motor.c`](../../firmware/components/pv_motor/pv_motor.c)
+- OpenVent's current hall code (raw counts, widened bands): [`firmware/components/dv_motor/dv_motor.c`](../../firmware/components/dv_motor/dv_motor.c)
 - Stock binary segments: `analysis/segments/`
 - Existing decompiles: `analysis/decomp/`
 - PyGhidra pipeline: `analysis/run_pyghidra.py`

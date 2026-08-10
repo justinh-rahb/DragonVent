@@ -75,7 +75,7 @@ jobs:
           - **\`dragonvent-${RELEASE_TAG}-full.bin\`** — first-time flash of a fresh module. Contains bootloader + partition table + OTA data + app, flashed with \`esptool\` over USB.
           - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload from **Device setup → Maintenance** in the shared web UI.
 
-          Prefer using the [\`dragonvent\` helper](https://github.com/justinh-rahb/OpenVent/blob/master/scripts/dragonvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
+          Prefer using the [\`dragonvent\` helper](https://github.com/justinh-rahb/DragonVent/blob/main/scripts/dragonvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
 
           \`\`\`
           scripts/dragonvent install -t ${RELEASE_TAG}
@@ -127,11 +127,23 @@ jobs:
           ```
           NOTES
 
+          # A semver pre-release tag carries a hyphenated suffix (v0.4.0-rc1,
+          # v1.0.0-beta2). Publish those as GitHub pre-releases so they are not
+          # marked "Latest" — otherwise a test build displaces the current
+          # stable release for everyone using the install helper's default.
+          PRERELEASE_FLAGS=""
+          case "$RELEASE_TAG" in
+            *-*) PRERELEASE_FLAGS="--prerelease"
+                 echo "Publishing $RELEASE_TAG as a pre-release" ;;
+            *)   PRERELEASE_FLAGS="--latest"
+                 echo "Publishing $RELEASE_TAG as a stable release" ;;
+          esac
+
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" dist/* --clobber
-            gh release edit "$RELEASE_TAG" --notes-file release_notes.md
+            gh release edit "$RELEASE_TAG" --notes-file release_notes.md $PRERELEASE_FLAGS
           else
             gh release create "$RELEASE_TAG" dist/* \
               --title "$RELEASE_TAG" \
-              --notes-file release_notes.md
+              --notes-file release_notes.md $PRERELEASE_FLAGS
           fi

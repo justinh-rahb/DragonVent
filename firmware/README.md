@@ -73,7 +73,7 @@ firmware/
     ├── dv_button/           # USER + BOOT debouncing, short/long press dispatch
     ├── dv_status_led/       # user-button LED: off = auto, blink = manual
     ├── dv_policy/           # auto/manual mode, hysteresis-based open/close decision
-    └── dv_portal/           # API-v2/Tasmota adapter + product setup callbacks
+    └── dv_portal/           # API v2 adapter + product setup callbacks
 ```
 
 Board-neutral WiFi, source selection, Bambu LAN, Moonraker, event-log, the
@@ -86,7 +86,7 @@ under the `app_nvs` namespace, so this refactor does not wipe existing settings.
 `/` serves the DragonVent surface from `dc_ui` in both station and captive-AP
 modes. Shared `dc_portal` owns Wi-Fi scanning and credentials, fallback-AP
 configuration, OTA, logs, reset, captive DNS, and recovery routing. The small
-product adapter exposes API v2 and Tasmota routes and supplies a schema plus
+product adapter exposes the API v2 routes and supplies a schema plus
 callbacks for printer-source and vent-policy settings. `/setup` opens the same
 SPA overlay; there is no second server-rendered interface.
 

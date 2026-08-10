@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "dv_portal.h"
 
-#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
 #include "cJSON.h"
 #include "dc_bambu.h"
@@ -22,8 +20,83 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "nvs.h"
 
 static uint32_t s_api_revision = 1;
+
+// Control token. Same NVS namespace and key as DragonBreath so the family stays
+// consistent, and the same two-tier model as pb_httpd_auth_ok():
+//
+//   token configured -> the header must match it exactly
+//   no token         -> any non-empty header value passes
+//
+// The second tier is a CSRF gate rather than authentication: a cross-origin HTML
+// form cannot set a custom header, so requiring one blocks the drive-by case
+// while leaving an unconfigured device usable. Setting a token upgrades it to
+// real authentication.
+#define DV_NVS_NS       "app_nvs"
+#define DV_NVS_TOKEN    "ctl_token"
+#define DV_TOKEN_MAX    64
+// dragon-core >= v0.8.0 sends both names with the same value. Prefer the
+// family-neutral one; accept the legacy name so an older SPA or an existing
+// script keeps working.
+#define DV_AUTH_HEADER        "X-Dragon-Auth"
+#define DV_AUTH_HEADER_LEGACY "X-DragonBreath-Auth"
+
+static void ctl_token(char *out, size_t outsz)
+{
+    out[0] = '\0';
+    nvs_handle_t h;
+    if (nvs_open(DV_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t sz = outsz;
+    nvs_get_str(h, DV_NVS_TOKEN, out, &sz);   // leaves out="" on any error
+    nvs_close(h);
+}
+
+// Read whichever auth header is present into out. Returns false if neither is
+// present, or the value is too long to be a valid token.
+static bool auth_header(httpd_req_t *req, char *out, size_t outsz)
+{
+    const char *names[] = { DV_AUTH_HEADER, DV_AUTH_HEADER_LEGACY };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        size_t len = httpd_req_get_hdr_value_len(req, names[i]);
+        if (len == 0 || len >= outsz) continue;
+        if (httpd_req_get_hdr_value_str(req, names[i], out, outsz) == ESP_OK && out[0])
+            return true;
+    }
+    out[0] = '\0';
+    return false;
+}
+
+static bool auth_ok(httpd_req_t *req)
+{
+    char token[DV_TOKEN_MAX + 1];
+    ctl_token(token, sizeof token);
+    char value[DV_TOKEN_MAX + 1] = {0};
+    if (!auth_header(req, value, sizeof value)) return false;
+    if (token[0]) return strcmp(value, token) == 0;   // configured -> exact match
+    return true;                                      // else presence-only CSRF gate
+}
+
+// dc_portal calls this for its own routes (provisioning, logs, OTA, factory
+// reset). DragonVent's product routes are registered directly with the server,
+// so they are NOT covered by it — they gate themselves via auth_reject() below.
+static bool authorize(httpd_req_t *req, void *ctx)
+{
+    (void)ctx;
+    return auth_ok(req);
+}
+
+// Reject a mutating request that fails auth with 403. Returns true if it did.
+static bool auth_reject(httpd_req_t *req)
+{
+    if (auth_ok(req)) return false;
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req,
+        "{\"ok\":false,\"error\":\"missing or invalid " DV_AUTH_HEADER " header\"}");
+    return true;
+}
 
 static esp_err_t send_json(httpd_req_t *req, cJSON *root)
 {
@@ -191,6 +264,7 @@ static esp_err_t state_get(httpd_req_t *req) { return send_json(req, make_state(
 
 static esp_err_t command_post(httpd_req_t *req)
 {
+    if (auth_reject(req)) return ESP_OK;
     cJSON *body = recv_json(req);
     cJSON *command = body ? cJSON_GetObjectItemCaseSensitive(body, "command") : NULL;
     cJSON *name = command ? cJSON_GetObjectItemCaseSensitive(command, "name") : NULL;
@@ -231,6 +305,7 @@ static esp_err_t settings_get(httpd_req_t *req)
 
 static esp_err_t settings_post(httpd_req_t *req)
 {
+    if (auth_reject(req)) return ESP_OK;
     cJSON *body = recv_json(req);
     cJSON *open = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_open_c") : NULL;
     cJSON *close = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_close_c") : NULL;
@@ -243,40 +318,6 @@ static esp_err_t settings_post(httpd_req_t *req)
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddItemToObject(reply, "state", make_state());
     return send_json(req, reply);
-}
-
-static void url_decode(char *text)
-{
-    char *out = text;
-    for (char *p = text; *p; ++p) {
-        if (*p == '+') *out++ = ' ';
-        else if (*p == '%' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
-            char hex[3] = { p[1], p[2], 0 }; *out++ = (char)strtol(hex, NULL, 16); p += 2;
-        } else *out++ = *p;
-    }
-    *out = 0;
-}
-
-static esp_err_t tasmota_get(httpd_req_t *req)
-{
-    char query[128] = {0}, command[32] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
-        httpd_query_key_value(query, "cmnd", command, sizeof(command));
-    url_decode(command);
-    const char *arg = command;
-    if (!strncasecmp(arg, "Power", 5)) { arg += 5; while (isdigit((unsigned char)*arg)) ++arg; while (*arg == ' ') ++arg; }
-    dv_motor_target_t current = dv_policy_get_target();
-    bool on = current == DV_MOTOR_TARGET_OPEN;
-    if (!strcasecmp(arg, "ON")) on = true;
-    else if (!strcasecmp(arg, "OFF")) on = false;
-    else if (!strcasecmp(arg, "TOGGLE")) on = !on;
-    else goto respond;
-    dv_policy_set_mode(DV_POLICY_MODE_MANUAL);
-    dv_policy_set_manual_target(on ? DV_MOTOR_TARGET_OPEN : DV_MOTOR_TARGET_CLOSED);
-    dc_evlog_add("tasmota: POWER %s", on ? "ON" : "OFF");
-respond:
-    httpd_resp_set_type(req, "application/json");
-    return httpd_resp_sendstr(req, on ? "{\"POWER\":\"ON\"}" : "{\"POWER\":\"OFF\"}");
 }
 
 static cJSON *field(cJSON *fields, const char *key, const char *label, const char *type, const char *value)
@@ -355,6 +396,21 @@ static cJSON *describe_product(void *ctx)
     cJSON_AddBoolToObject(field(fields, "bambu_code", "Bambu access code", "text", ""), "secret", true);
     cJSON_AddItemToArray(sections, bambu);
 
+    // Control token. Never echoed back — the field is always blank and only its
+    // "configured" state is reported, so the secret cannot be read out of the
+    // setup document. Blank on save leaves the current value alone; the explicit
+    // "-" clears it (an empty string cannot mean both "unchanged" and "clear").
+    char token[DV_TOKEN_MAX + 1];
+    ctl_token(token, sizeof token);
+    cJSON *security = cJSON_CreateObject();
+    cJSON_AddStringToObject(security, "title", "Control token");
+    cJSON_AddStringToObject(security, "description", token[0]
+        ? "A token is set. Requests must send it. Leave blank to keep it, or enter - to remove it."
+        : "No token set: any local request with the auth header is accepted. Set one to require it.");
+    fields = cJSON_AddArrayToObject(security, "fields");
+    cJSON_AddBoolToObject(field(fields, "control_token", "Control token", "text", ""), "secret", true);
+    cJSON_AddItemToArray(sections, security);
+
     float open_c = 45, close_c = 35; dv_policy_get_thresholds(&open_c, &close_c);
     cJSON *policy = cJSON_CreateObject(); cJSON_AddStringToObject(policy, "title", "Automatic vent policy");
     fields = cJSON_AddArrayToObject(policy, "fields");
@@ -412,6 +468,31 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
         esp_err_t err = dc_bambu_set_config(&config);
         if (err != ESP_OK) return err;
     }
+    // Blank means "unchanged" (the field is never pre-filled, so every save would
+    // otherwise clear it); a single "-" is the explicit clear.
+    const char *token = string_value(values, "control_token");
+    if (token && token[0]) {
+        if (strlen(token) > DV_TOKEN_MAX) {
+            snprintf(message, message_size, "Control token must be at most %d characters", DV_TOKEN_MAX);
+            return ESP_ERR_INVALID_ARG;
+        }
+        nvs_handle_t h;
+        if (nvs_open(DV_NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+            snprintf(message, message_size, "Could not open storage");
+            return ESP_FAIL;
+        }
+        esp_err_t err = strcmp(token, "-") == 0 ? nvs_erase_key(h, DV_NVS_TOKEN)
+                                                : nvs_set_str(h, DV_NVS_TOKEN, token);
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;   // clearing an unset token
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+        if (err != ESP_OK) {
+            snprintf(message, message_size, "Could not save the control token");
+            return err;
+        }
+        dc_evlog_add("control token %s", strcmp(token, "-") == 0 ? "cleared" : "set");
+    }
+
     double open_c = 0, close_c = 0;
     if (number_value(values, "bed_open_c", &open_c) && number_value(values, "bed_close_c", &close_c) &&
         dv_policy_set_thresholds((float)open_c, (float)close_c) != ESP_OK) {
@@ -439,12 +520,12 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/command", .method = HTTP_POST, .handler = command_post },
         { .uri = "/api/v2/settings", .method = HTTP_GET, .handler = settings_get },
         { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = settings_post },
-        { .uri = "/cm", .method = HTTP_GET, .handler = tasmota_get },
     };
     const dc_portal_config_t config = {
         .product = "dragonvent", .display_name = "DragonVent",
         .product_routes = routes, .product_route_count = sizeof(routes) / sizeof(routes[0]),
         .describe_product = describe_product, .apply_product = apply_product,
+        .authorize = authorize,
         .validate_image = validate_image,
         .factory_reset = factory_reset,
     };

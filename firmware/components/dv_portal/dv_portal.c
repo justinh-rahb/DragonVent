@@ -290,10 +290,40 @@ static cJSON *field(cJSON *fields, const char *key, const char *label, const cha
     return item;
 }
 
+// Reveal a section only when the control-source selector equals this value. Sections
+// without it always render, so this stays backward-compatible with core < v0.6.1.
+static void visible_when(cJSON *section, const char *field_key, const char *value)
+{
+    cJSON *vw = cJSON_AddObjectToObject(section, "visible_when");
+    cJSON_AddStringToObject(vw, "field", field_key);
+    cJSON_AddStringToObject(vw, "value", value);
+}
+
+// Refuse an OTA image that isn't ours. ESP-IDF's own verification (in esp_ota_end)
+// already rejects corrupt images and the wrong chip — a DragonBreath image is
+// ESP32-C3 and fails there — but any VALID ESP32 app image would otherwise be made
+// the boot partition, leaving a device that boots into unrelated firmware. There is
+// no published stock image to fall back to, so recovery would mean USB plus the
+// owner's own flash backup. panda_vent is accepted so a stock image can be restored.
+static esp_err_t validate_image(const esp_app_desc_t *image, void *ctx,
+                                char *message, size_t message_size)
+{
+    (void)ctx;
+    if (!strcmp(image->project_name, "dragonvent") || !strcmp(image->project_name, "panda_vent"))
+        return ESP_OK;
+    snprintf(message, message_size,
+             "Not a DragonVent or stock Panda Vent image (got \"%s\").", image->project_name);
+    return ESP_ERR_INVALID_ARG;
+}
+
 static cJSON *describe_product(void *ctx)
 {
     (void)ctx;
     cJSON *root = cJSON_CreateObject(), *sections = cJSON_AddArrayToObject(root, "sections");
+
+    // The selector lives alone in an always-visible section; the per-source
+    // sections below reveal against it. The SPA looks the controlling field up
+    // across the whole setup host, so it does not need to share their card.
     cJSON *printer = cJSON_CreateObject();
     cJSON_AddStringToObject(printer, "title", "Printer source");
     cJSON_AddStringToObject(printer, "description", "Choose one controller. Source changes take effect after restart.");
@@ -302,16 +332,28 @@ static cJSON *describe_product(void *ctx)
     cJSON *options = cJSON_AddArrayToObject(source, "options");
     const char *source_values[][2] = {{"klipper","Klipper / Moonraker"},{"bambu","Bambu LAN"},{"none","Standalone"}};
     for (size_t i = 0; i < 3; ++i) { cJSON *o = cJSON_CreateObject(); cJSON_AddStringToObject(o,"value",source_values[i][0]); cJSON_AddStringToObject(o,"label",source_values[i][1]); cJSON_AddItemToArray(options,o); }
+    cJSON_AddItemToArray(sections, printer);
+
     dc_moonraker_config_t mk = {0}; dc_moonraker_get_config(&mk);
     char port[8]; snprintf(port, sizeof(port), "%u", mk.port ?: 7125);
+    cJSON *klipper = cJSON_CreateObject();
+    cJSON_AddStringToObject(klipper, "title", "Klipper / Moonraker");
+    visible_when(klipper, "source", "klipper");
+    fields = cJSON_AddArrayToObject(klipper, "fields");
     field(fields, "moonraker_host", "Moonraker host", "text", mk.host);
     field(fields, "moonraker_port", "Moonraker port", "number", port);
     cJSON_AddBoolToObject(field(fields, "moonraker_api_key", "Moonraker API key", "text", ""), "secret", true);
+    cJSON_AddItemToArray(sections, klipper);
+
     dc_bambu_config_t bb = {0}; dc_bambu_get_config(&bb);
+    cJSON *bambu = cJSON_CreateObject();
+    cJSON_AddStringToObject(bambu, "title", "Bambu LAN");
+    visible_when(bambu, "source", "bambu");
+    fields = cJSON_AddArrayToObject(bambu, "fields");
     field(fields, "bambu_host", "Bambu host", "text", bb.host);
     field(fields, "bambu_serial", "Bambu serial", "text", bb.serial);
     cJSON_AddBoolToObject(field(fields, "bambu_code", "Bambu access code", "text", ""), "secret", true);
-    cJSON_AddItemToArray(sections, printer);
+    cJSON_AddItemToArray(sections, bambu);
 
     float open_c = 45, close_c = 35; dv_policy_get_thresholds(&open_c, &close_c);
     cJSON *policy = cJSON_CreateObject(); cJSON_AddStringToObject(policy, "title", "Automatic vent policy");
@@ -403,6 +445,7 @@ esp_err_t dv_portal_start(void)
         .product = "dragonvent", .display_name = "DragonVent",
         .product_routes = routes, .product_route_count = sizeof(routes) / sizeof(routes[0]),
         .describe_product = describe_product, .apply_product = apply_product,
+        .validate_image = validate_image,
         .factory_reset = factory_reset,
     };
     return dc_portal_start(&config);

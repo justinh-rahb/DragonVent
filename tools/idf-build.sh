@@ -48,9 +48,12 @@ MANIFEST="$PROJECT_DIR/main/idf_component.yml"
 LOCK="$PROJECT_DIR/dependencies.lock"
 MAPPING_TMP=$(mktemp)
 MISMATCH_TMP=$(mktemp)
-trap 'rm -f "$MAPPING_TMP" "$MISMATCH_TMP"' EXIT
+RESOLVE_CACHE=$(mktemp)
+trap 'rm -f "$MAPPING_TMP" "$MISMATCH_TMP" "$RESOLVE_CACHE"' EXIT
+CHECKED_REFS=0
 
-extract_exact_refs() {
+# The lock always records a resolved 40-hex object id under each component.
+extract_lock_refs() {
   awk '
     /^  [A-Za-z0-9_.-]+:$/ { name=$1; sub(/:$/, "", name); next }
     name != "" && /^    version:/ {
@@ -61,16 +64,57 @@ extract_exact_refs() {
   ' "$1"
 }
 
+# The manifest may pin either a raw commit id or a tag/branch name, so emit the
+# git remote alongside the ref and let the caller resolve it. Filtering to
+# 40-hex here (as an earlier version did) silently dropped every tag pin, which
+# left the whole comparison a no-op that still reported success.
+extract_manifest_refs() {
+  awk '
+    /^  [A-Za-z0-9_.-]+:$/ { name=$1; sub(/:$/, "", name); url=""; next }
+    name != "" && /^    git:/ { url=$2; gsub(/["'\'' ]/, "", url); next }
+    name != "" && /^    version:/ {
+      value=$2; gsub(/["'\'' ]/, "", value)
+      if (url != "") print name, url, value
+      name=""; url=""
+    }
+  ' "$1"
+}
+
+# ref -> object id the lock would record. A raw commit id passes through; a tag
+# or branch is resolved against the remote. Annotated tags resolve to the TAG
+# object (refs/tags/<x>, not the ^{} peel) because that is what the component
+# manager writes into the lock.
+resolve_ref() {
+  local url=$1 ref=$2 cached out sha
+  if [[ ${#ref} -eq 40 && $ref =~ ^[0-9a-f]+$ ]]; then printf '%s' "$ref"; return 0; fi
+  cached=$(awk -v u="$url" -v r="$ref" '$1 == u && $2 == r { print $3; exit }' "$RESOLVE_CACHE")
+  if [[ -n $cached ]]; then printf '%s' "$cached"; return 0; fi
+  out=$(git ls-remote "$url" "refs/tags/$ref" "refs/heads/$ref" 2>/dev/null || true)
+  sha=$(printf '%s\n' "$out" | awk -v r="refs/tags/$ref" '$2 == r { print $1; exit }')
+  [[ -z $sha ]] && sha=$(printf '%s\n' "$out" | awk -v r="refs/heads/$ref" '$2 == r { print $1; exit }')
+  [[ -n $sha ]] && printf '%s %s %s\n' "$url" "$ref" "$sha" >> "$RESOLVE_CACHE"
+  printf '%s' "$sha"
+}
+
 check_lock() {
   : > "$MISMATCH_TMP"
+  CHECKED_REFS=0
   [[ -f "$MANIFEST" && -f "$LOCK" ]] || return 0
-  extract_exact_refs "$LOCK" > "$MAPPING_TMP"
-  while read -r component expected; do
+  extract_lock_refs "$LOCK" > "$MAPPING_TMP"
+  local component url ref expected actual
+  while read -r component url ref; do
+    expected=$(resolve_ref "$url" "$ref")
+    if [[ -z $expected ]]; then
+      echo "warning: cannot resolve $component ref '$ref' from $url (offline?); not verified" >&2
+      continue
+    fi
+    CHECKED_REFS=$((CHECKED_REFS + 1))
     actual=$(awk -v name="$component" '$1 == name { print $2; exit }' "$MAPPING_TMP")
     if [[ "$actual" != "$expected" ]]; then
-      printf '%s expected %s, lock has %s\n' "$component" "$expected" "${actual:-missing}" >> "$MISMATCH_TMP"
+      printf '%s pinned %s (%s), lock has %s\n' \
+        "$component" "$ref" "$expected" "${actual:-missing}" >> "$MISMATCH_TMP"
     fi
-  done < <(extract_exact_refs "$MANIFEST")
+  done < <(extract_manifest_refs "$MANIFEST")
   [[ ! -s "$MISMATCH_TMP" ]]
 }
 
@@ -97,4 +141,10 @@ if ! check_lock; then
   sed 's/^/  /' "$MISMATCH_TMP" >&2
   exit 1
 fi
-echo "Dependency lock matches every exact manifest ref."
+if [[ "$CHECKED_REFS" -eq 0 ]]; then
+  # Nothing verified is not the same as everything matching. Say so, so a
+  # manifest the parser cannot read never masquerades as a clean check.
+  echo "warning: no pinned manifest refs were verified against the lock" >&2
+else
+  echo "Dependency lock matches all $CHECKED_REFS pinned manifest ref(s)."
+fi

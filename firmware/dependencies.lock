@@ -8,7 +8,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_bambu
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_evlog:
     component_hash: 65ebe676e8f04de0251ce09408e249f1c7a103d7a164cdb38830564c09a7959d
     dependencies:
@@ -18,7 +18,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_evlog
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_moonraker:
     component_hash: 6cb4d2d87343933077fd12b83bc072ea038e95ae9f2b1485efe78577f2aef3bc
     dependencies:
@@ -30,7 +30,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_moonraker
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_portal:
     component_hash: df0af5af3a51ad88f25d0972aca1043e1849e80ec66837647f1d7950a0b1e61f
     dependencies:
@@ -40,7 +40,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_portal
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_source:
     component_hash: 673fa10f33be5721433e83b423fefb4b5c89700c38bbb79440c3e5e690f1c557
     dependencies:
@@ -50,9 +50,9 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_source
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_ui:
-    component_hash: 6a94319b963c51de21e7e827f163111633490a5e9e406dff0d5b93ef014410f8
+    component_hash: 3e37d04b8acd16843a3e0e89d7a8475f2fc7d2c3684bdcd21ad7a3686dadff90
     dependencies:
     - name: idf
       version: '>=5.3'
@@ -60,7 +60,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_ui
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   dc_wifi:
     component_hash: b373c30769c47bc9eb2d7f65b33ab95659758fbc8e1b63cd3f645d7f97301517
     dependencies:
@@ -72,7 +72,7 @@ dependencies:
       git: https://github.com/justinh-rahb/dragon-core.git
       path: components/dc_wifi
       type: git
-    version: 29eee71395655ec562aaabed4ffec37824090d42
+    version: 8b4a59f2a4d6b7aa671f703e0c88bdb851901cff
   espressif/esp_websocket_client:
     component_hash: dc00233af846f3a744ada283a300e0d586040aadc3ee67361645ecdce4523672
     dependencies:
@@ -105,6 +105,6 @@ direct_dependencies:
 - dc_source
 - dc_ui
 - dc_wifi
-manifest_hash: 8f50970a5484d29e9ce06a7a432d3041028e627788021dc400d9e75768ff1f76
+manifest_hash: 7ebbab190e0d669e2bc628af1b440772b05db3bfe1acf90effa1962e1bec1f77
 target: esp32
 version: 2.0.0

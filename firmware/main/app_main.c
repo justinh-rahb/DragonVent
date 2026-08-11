@@ -73,29 +73,37 @@ static void reflect_mode_on_led(void)
 // the color from the user's config: vent state, printing, or a temp gradient).
 static void update_rgb_from_state(void)
 {
-    bool  printing = false, error = false;
+    dv_printer_status_t status = DV_PS_NONE;
     float bed = NAN;
     switch (dc_source_get()) {
     case DC_SRC_BAMBU: {
         dc_bambu_status_t st = {0};
         dc_bambu_get_status(&st);
-        printing = st.printing;
-        error = st.error;
+        status = st.error ? DV_PS_ERROR
+               : st.printing ? DV_PS_PRINTING
+               : st.connected ? DV_PS_IDLE : DV_PS_NONE;   // Bambu exposes a coarse status
         bed = st.bed_temp;
         break;
     }
     case DC_SRC_KLIPPER: {
         dc_moonraker_status_t st = {0};
         dc_moonraker_get_status(&st);
-        printing = st.printing;
-        error = (st.printer == DC_PRINTER_ERROR);
+        switch (st.printer) {
+        case DC_PRINTER_IDLE:      status = DV_PS_IDLE; break;
+        case DC_PRINTER_PREPARING: status = DV_PS_PREPARING; break;
+        case DC_PRINTER_PRINTING:  status = DV_PS_PRINTING; break;
+        case DC_PRINTER_PAUSED:    status = DV_PS_PAUSED; break;
+        case DC_PRINTER_COMPLETE:  status = DV_PS_COMPLETE; break;
+        case DC_PRINTER_ERROR:     status = DV_PS_ERROR; break;
+        default:                   status = DV_PS_NONE; break;   // UNKNOWN / not subscribed
+        }
         bed = st.bed_temp;
         break;
     }
     default:
         break;
     }
-    dv_rgb_update((int)dv_policy_get_target(), printing, error, bed);
+    dv_rgb_update((int)dv_policy_get_target(), status, bed);
 }
 
 // Button semantics from the stock firmware:

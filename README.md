@@ -43,28 +43,37 @@ Deferred:
 
 Full pin map + provenance: [docs/HARDWARE_ANALYSIS.md](docs/HARDWARE_ANALYSIS.md).
 
-## Install — over stock, no USB (v0.5.0+)
+## Install — over stock, from a browser (v0.5.0+)
 
 As of **v0.5.0** DragonVent runs on the **stock Panda Vent partition table**, so
-you install it **over the stock firmware from a browser** — no serial cable. The
-stock bootloader is preserved; only the app slot is written. The included
-[`scripts/dragonvent`](scripts/dragonvent) helper wraps it up:
+you install and update it **entirely from the web UI** — no serial cable, no
+helper scripts. The stock bootloader is preserved; only the app slot is written.
 
-```
-scripts/dragonvent backup                                # ⚠ USB dump of stock first (your only way back)
-scripts/dragonvent install v0.5.0 -H PandaVent.local     # OTA over stock (no USB)
-scripts/dragonvent restore stock-panda-vent-backup.bin   # roll back (USB)
-```
+1. Grab `dragonvent-<tag>-ota.bin` from the [latest release](../../releases/latest).
+2. Open the **stock** Panda Vent's web UI (`http://PandaVent.local/` or its IP)
+   and upload the `ota.bin` on its firmware-update page. It writes DragonVent to
+   the inactive slot and reboots into it.
+3. First boot is the `DragonVent_XXXX` setup AP (WPA2, password `987654321`);
+   join it to set WiFi + printer. Afterwards it's on mDNS at `DragonVent.local`.
+
+Updating an existing DragonVent is the same file, from **Device setup →
+Maintenance** in the DragonVent web UI.
 
 **⚠ Back up stock first** — BTT publishes no Panda Vent image, so dump the flash
-over USB *before* your first install; it's your only way back.
+over USB *before* your first install; it's your only way back:
+
+```
+python -m esptool --chip esp32 -p PORT -b 460800 read_flash 0x0 0x400000 stock-panda-vent-backup.bin
+```
 
 **Upgrading from 0.4.x:** those builds used a different partition table, so you
-can't OTA straight across — `restore` to stock, then `install` over stock (same
-one-time roll-back as the DragonBreath 1.0 migration). 0.5.0+ update in place.
+can't OTA straight across. Write your stock backup back over USB, then install
+over stock from the web UI (same one-time roll-back as the DragonBreath 1.0
+migration). 0.5.0+ update in place.
 
-USB recovery is still available: `scripts/dragonvent install --usb v0.5.0`
-(`-p /dev/ttyUSB0` if autodetect misses the port).
+```
+python -m esptool --chip esp32 -p PORT -b 460800 write_flash 0x0 stock-panda-vent-backup.bin
+```
 
 ## Status
 

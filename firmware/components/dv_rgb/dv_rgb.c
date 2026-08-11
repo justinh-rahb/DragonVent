@@ -47,11 +47,18 @@ static dv_lighting_t s_cfg = {
     .temp_min_c = 25, .temp_max_c = 60,
     .effect = DV_FX_SOLID, .speed = 128,
     .error = {255, 0, 0}, .use_error = false,   // flashing red on a print error
+    // Printer-status mode (defaults mirror the stock Panda Vent palette).
+    .mode = DV_LIGHT_MODE_VENT,
+    .idle     = {255, 255, 255},   // white
+    .prep     = {248, 163,  35},   // orange (stock F8A323)
+    .paused   = {255, 255, 255},   // white
+    .complete = {  0, 255,  42},   // green (stock 00FF2A)
 };
 
 // Latest state fed to the policy, the animation phase/frame counter, and the
 // last solid color pushed (so a steady color skips redundant RMT refreshes).
 static int      s_target   = DV_MOTOR_TARGET_CLOSED;
+static int      s_pstatus  = DV_PS_NONE;
 static bool     s_printing = false;
 static bool     s_error    = false;
 static float    s_bed      = NAN;
@@ -106,12 +113,28 @@ static void fill_locked(const uint8_t rgb[3])
     }
 }
 
-// Resolve the state-based base color (open/closed/printing/temp), no brightness.
+// Map the printer status to its configured color (PRINTER mode).
+static const uint8_t *printer_status_color(void)
+{
+    switch (s_pstatus) {
+    case DV_PS_PREPARING: return s_cfg.prep;
+    case DV_PS_PRINTING:  return s_cfg.printing;
+    case DV_PS_PAUSED:    return s_cfg.paused;
+    case DV_PS_COMPLETE:  return s_cfg.complete;
+    case DV_PS_ERROR:     return s_cfg.error;
+    default:              return s_cfg.idle;   // IDLE / NONE
+    }
+}
+
+// Resolve the state base color (no brightness). PRINTER mode follows the printer
+// status; VENT mode follows the vent (open/closed, printing override, temp).
 static void compute_base(uint8_t out[3])
 {
     const uint8_t *base;
     uint8_t grad[3];
-    if (s_cfg.use_printing && s_printing) {
+    if (s_cfg.mode == DV_LIGHT_MODE_PRINTER) {
+        base = printer_status_color();
+    } else if (s_cfg.use_printing && s_printing) {
         base = s_cfg.printing;
     } else if (s_cfg.use_temp && !isnan(s_bed)) {
         int lo = s_cfg.temp_min_c, hi = s_cfg.temp_max_c;
@@ -159,7 +182,8 @@ static void render_locked(void)
     case DV_FX_RAINBOW: {
         for (int i = 0; i < s_count; ++i) {
             for (int j = 0; j < LEDS_PER_STRIP; ++j) {
-                uint16_t hue = (uint16_t)(s_phase + (uint32_t)j * (65536 / LEDS_PER_STRIP));
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                uint16_t hue = (uint16_t)(s_phase + (uint32_t)p * (65536 / LEDS_PER_STRIP));
                 uint8_t rgb[3];
                 hsv2rgb(hue, 255, s_cfg.brightness, rgb);
                 led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
@@ -167,6 +191,52 @@ static void render_locked(void)
             led_strip_refresh(s_strips[i]);
         }
         s_last[0] = 0xAA;                      // invalidate solid dedup
+        break;
+    }
+    case DV_FX_STROBE: {
+        uint8_t base[3];
+        compute_base(base);
+        bool on = ((s_phase >> 12) & 1) == 0;   // flash rate scales with speed
+        uint8_t rgb[3] = {0, 0, 0};
+        if (on) for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
+        fill_locked(rgb);
+        s_last[0] = 0x33;
+        break;
+    }
+    case DV_FX_WAVE: {
+        uint8_t base[3];
+        compute_base(base);
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                uint16_t x = (uint16_t)((uint32_t)p * (65536 / LEDS_PER_STRIP) + s_phase);
+                uint8_t w = (x < 32768) ? (uint8_t)(x >> 7) : (uint8_t)(255 - ((x - 32768) >> 7));
+                uint16_t lvl = (uint16_t)s_cfg.brightness * w / 255;
+                uint8_t rgb[3];
+                for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * lvl / 255);
+                led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0x44;
+        break;
+    }
+    case DV_FX_MARQUEE: {
+        uint8_t base[3];
+        compute_base(base);
+        uint8_t on_rgb[3];
+        for (int k = 0; k < 3; ++k) on_rgb[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
+        int offset = (int)((s_phase >> 11) % 3);
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                bool lit = ((p + offset) % 3) == 0;   // every 3rd LED, scrolling
+                if (lit) led_strip_set_pixel(s_strips[i], j, on_rgb[0], on_rgb[1], on_rgb[2]);
+                else     led_strip_set_pixel(s_strips[i], j, 0, 0, 0);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0x66;
         break;
     }
     case DV_FX_BREATHE: {
@@ -209,13 +279,14 @@ static void anim_task(void *arg)
     }
 }
 
-void dv_rgb_update(int target, bool printing, bool error, float bed_temp_c)
+void dv_rgb_update(int target, int status, float bed_temp_c)
 {
     if (s_lock == NULL) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_target = target;
-    s_printing = printing;
-    s_error = error;
+    s_pstatus = status;
+    s_printing = (status == DV_PS_PRINTING);   // vent-mode printing override
+    s_error = (status == DV_PS_ERROR);         // error-flash override (both modes)
     s_bed = bed_temp_c;
     xSemaphoreGive(s_lock);
     // The animation task renders on the next frame.

@@ -1,0 +1,7 @@
+# DragonVent built against the stock panda_vent table (OTA-over-stock; stock bootloader + table kept)
+# Name,     Type, SubType,  Offset,    Size,     Flags
+nvs,        data, nvs,      0x9000,    0x3000,
+otadata,    data, ota,      0xc000,    0x2000,
+ota_0,      app,  ota_0,    0x10000,   0x1F0000,
+ota_1,      app,  ota_1,    0x200000,  0x1F0000,
+coredump,   data, coredump, 0x3f0000,  0x1000,

@@ -414,6 +414,46 @@ static esp_err_t lighting_post(httpd_req_t *req)
     return send_json(req, lighting_json());
 }
 
+static esp_err_t filament_get(httpd_req_t *req)
+{
+    dv_filament_rule_t rules[DV_FILAMENT_MAX];
+    int n = dv_policy_filament_rules(rules, DV_FILAMENT_MAX);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON *arr = cJSON_AddArrayToObject(root, "rules");
+    for (int i = 0; i < n; ++i) {
+        cJSON *r = cJSON_CreateObject();
+        cJSON_AddStringToObject(r, "name", rules[i].name);
+        cJSON_AddBoolToObject(r, "seal", rules[i].seal);
+        cJSON_AddItemToArray(arr, r);
+    }
+    return send_json(req, root);
+}
+
+static esp_err_t filament_post(httpd_req_t *req)
+{
+    if (auth_reject(req)) return ESP_OK;
+    cJSON *body = recv_json(req);
+    cJSON *arr = body ? cJSON_GetObjectItemCaseSensitive(body, "rules") : NULL;
+    if (!cJSON_IsArray(arr)) { cJSON_Delete(body); return api_error(req, "400 Bad Request", "rules array required"); }
+    dv_filament_rule_t rules[DV_FILAMENT_MAX];
+    int n = 0;
+    cJSON *e;
+    cJSON_ArrayForEach(e, arr) {
+        if (n >= DV_FILAMENT_MAX) break;
+        cJSON *nm = cJSON_GetObjectItemCaseSensitive(e, "name");
+        if (!cJSON_IsString(nm) || nm->valuestring[0] == '\0') continue;   // skip blank rows
+        cJSON *sl = cJSON_GetObjectItemCaseSensitive(e, "seal");
+        snprintf(rules[n].name, sizeof(rules[n].name), "%s", nm->valuestring);
+        rules[n].seal = cJSON_IsTrue(sl);
+        ++n;
+    }
+    cJSON_Delete(body);
+    dv_policy_set_filament_rules(rules, n);
+    ++s_api_revision;
+    return filament_get(req);
+}
+
 static cJSON *field(cJSON *fields, const char *key, const char *label, const char *type, const char *value)
 {
     cJSON *item = cJSON_CreateObject();
@@ -616,6 +656,8 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = settings_post },
         { .uri = "/api/v2/lighting", .method = HTTP_GET, .handler = lighting_get },
         { .uri = "/api/v2/lighting", .method = HTTP_POST, .handler = lighting_post },
+        { .uri = "/api/v2/filament", .method = HTTP_GET, .handler = filament_get },
+        { .uri = "/api/v2/filament", .method = HTTP_POST, .handler = filament_post },
     };
     const dc_portal_config_t config = {
         .product = "dragonvent", .display_name = "DragonVent",

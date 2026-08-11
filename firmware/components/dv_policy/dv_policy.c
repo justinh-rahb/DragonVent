@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "nvs.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -21,6 +22,7 @@ static const char *TAG = "dv_policy";
 #define KEY_BED_OPEN   "bed_open_c"
 #define KEY_BED_CLOSE  "bed_close_c"
 #define KEY_MAN_TGT    "man_tgt"
+#define KEY_FILAMENT   "fil_rules"
 
 // Defaults for the bed-temperature hysteresis if the user hasn't changed
 // them: open the vent when bed climbs above BED_OPEN_C_DEFAULT, close it
@@ -45,19 +47,29 @@ typedef enum {
     MAT_PREFER_SEALED,    // hot-chamber plastics (ABS, ASA, PC, PA)
 } material_pref_t;
 
+// Default filament rules — the plastics most enclosure users seal vs. vent by
+// hand. User-editable + persisted (KEY_FILAMENT).
+static const dv_filament_rule_t DEFAULT_FILAMENT_RULES[] = {
+    {"PLA",  false}, {"PETG", false}, {"PET",  false}, {"TPU",  false},
+    {"ABS",  true},  {"ASA",  true},  {"PC",   true},  {"PA",   true},  {"HIPS", true},
+};
+static dv_filament_rule_t s_rules[DV_FILAMENT_MAX];
+static int                s_rule_count = 0;
+
+// First rule whose (uppercase) name is a prefix of the filament wins.
 static material_pref_t material_preference(const char *m)
 {
     if (m == NULL || m[0] == '\0') return MAT_PREFER_UNKNOWN;
-    // Match on prefix so "PLA_PLUS", "PETG-CF", "ABS+", etc. classify correctly.
-    if (strncmp(m, "PLA",  3) == 0) return MAT_PREFER_OPEN;
-    if (strncmp(m, "PETG", 4) == 0) return MAT_PREFER_OPEN;
-    if (strncmp(m, "PET",  3) == 0) return MAT_PREFER_OPEN;
-    if (strncmp(m, "TPU",  3) == 0) return MAT_PREFER_OPEN;
-    if (strncmp(m, "ABS",  3) == 0) return MAT_PREFER_SEALED;
-    if (strncmp(m, "ASA",  3) == 0) return MAT_PREFER_SEALED;
-    if (strncmp(m, "PC",   2) == 0) return MAT_PREFER_SEALED;
-    if (strncmp(m, "PA",   2) == 0) return MAT_PREFER_SEALED;   // nylon
-    if (strncmp(m, "HIPS", 4) == 0) return MAT_PREFER_SEALED;
+    char up[16];
+    size_t k = 0;
+    for (const char *p = m; *p && k < sizeof(up) - 1; ++p) up[k++] = (char)toupper((unsigned char)*p);
+    up[k] = '\0';
+    for (int i = 0; i < s_rule_count; ++i) {
+        size_t n = strnlen(s_rules[i].name, sizeof(s_rules[i].name));
+        if (n > 0 && strncmp(up, s_rules[i].name, n) == 0) {
+            return s_rules[i].seal ? MAT_PREFER_SEALED : MAT_PREFER_OPEN;
+        }
+    }
     return MAT_PREFER_UNKNOWN;
 }
 
@@ -201,6 +213,10 @@ static uint32_t c_to_centi(float c)
 
 static void load_persisted(void)
 {
+    // Filament-rule defaults up front, so they apply even if NVS can't be opened.
+    memcpy(s_rules, DEFAULT_FILAMENT_RULES, sizeof(DEFAULT_FILAMENT_RULES));
+    s_rule_count = sizeof(DEFAULT_FILAMENT_RULES) / sizeof(DEFAULT_FILAMENT_RULES[0]);
+
     nvs_handle_t h;
     if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
 
@@ -220,6 +236,14 @@ static void load_persisted(void)
     uint32_t v = 0;
     if (nvs_get_u32(h, KEY_BED_OPEN,  &v) == ESP_OK) s_bed_open_c  = centi_to_c(v);
     if (nvs_get_u32(h, KEY_BED_CLOSE, &v) == ESP_OK) s_bed_close_c = centi_to_c(v);
+
+    // Filament rules: override the defaults from the NVS blob if present + valid
+    // (a whole number of rules). On any error nvs_get_blob leaves s_rules alone.
+    size_t rsz = sizeof(s_rules);
+    if (nvs_get_blob(h, KEY_FILAMENT, s_rules, &rsz) == ESP_OK &&
+        rsz >= sizeof(dv_filament_rule_t) && rsz % sizeof(dv_filament_rule_t) == 0) {
+        s_rule_count = (int)(rsz / sizeof(dv_filament_rule_t));
+    }
     nvs_close(h);
 }
 
@@ -249,6 +273,43 @@ static void save_thresholds(float open_c, float close_c)
     nvs_set_u32(h, KEY_BED_CLOSE, c_to_centi(close_c));
     nvs_commit(h);
     nvs_close(h);
+}
+
+int dv_policy_filament_rules(dv_filament_rule_t *out, int max)
+{
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    int n = s_rule_count;
+    if (n > max) n = max;
+    if (out && n > 0) memcpy(out, s_rules, (size_t)n * sizeof(dv_filament_rule_t));
+    if (s_lock) xSemaphoreGive(s_lock);
+    return n;
+}
+
+esp_err_t dv_policy_set_filament_rules(const dv_filament_rule_t *rules, int count)
+{
+    if (count < 0 || count > DV_FILAMENT_MAX || (count > 0 && rules == NULL)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    memset(s_rules, 0, sizeof(s_rules));
+    for (int i = 0; i < count; ++i) {
+        size_t k = 0;   // store names uppercase for case-insensitive matching
+        for (const char *p = rules[i].name; *p && k < sizeof(s_rules[i].name) - 1; ++p) {
+            s_rules[i].name[k++] = (char)toupper((unsigned char)*p);
+        }
+        s_rules[i].name[k] = '\0';
+        s_rules[i].seal = rules[i].seal;
+    }
+    s_rule_count = count;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
+        if (count == 0) nvs_erase_key(h, KEY_FILAMENT);
+        else nvs_set_blob(h, KEY_FILAMENT, s_rules, (size_t)count * sizeof(dv_filament_rule_t));
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    if (s_lock) xSemaphoreGive(s_lock);
+    return ESP_OK;
 }
 
 // ---------- public API ----------

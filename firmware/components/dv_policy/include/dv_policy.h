@@ -34,4 +34,17 @@ dv_motor_target_t dv_policy_get_target(void);          // whatever we're command
 esp_err_t dv_policy_get_thresholds(float *bed_open_c, float *bed_close_c);
 esp_err_t dv_policy_set_thresholds(float bed_open_c, float bed_close_c);
 
+// Filament rules for AUTO mode. During a print, if the detected filament name
+// begins with a rule's name, the vent follows that rule (seal = closed, else
+// vent = open); an unmatched filament vents (safe default for PLA-family).
+// Names are matched case-insensitively as prefixes ("PLA" matches "PLA+").
+#define DV_FILAMENT_MAX 20
+typedef struct {
+    char name[12];   // filament prefix, e.g. "PLA", "ABS"
+    bool seal;       // true = seal chamber (closed); false = vent (open)
+} dv_filament_rule_t;
+
+int       dv_policy_filament_rules(dv_filament_rule_t *out, int max);   // returns count
+esp_err_t dv_policy_set_filament_rules(const dv_filament_rule_t *rules, int count);  // persisted
+
 esp_err_t dv_policy_clear(void);   // wipe all persisted policy state

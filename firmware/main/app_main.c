@@ -8,10 +8,12 @@
 #include "dv_policy.h"
 #include "dv_portal.h"
 #include "dv_status_led.h"
+#include "dv_rgb.h"
 #include "dc_wifi.h"
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -65,6 +67,35 @@ static void reflect_mode_on_led(void)
     dv_status_led_set(dv_policy_get_mode() == DV_POLICY_MODE_AUTO
                           ? DV_STATUS_LED_OFF
                           : DV_STATUS_LED_BLINK);
+}
+
+// Feed current vent + printer state to the RGB lighting policy (which decides
+// the color from the user's config: vent state, printing, or a temp gradient).
+static void update_rgb_from_state(void)
+{
+    bool  printing = false, error = false;
+    float bed = NAN;
+    switch (dc_source_get()) {
+    case DC_SRC_BAMBU: {
+        dc_bambu_status_t st = {0};
+        dc_bambu_get_status(&st);
+        printing = st.printing;
+        error = st.error;
+        bed = st.bed_temp;
+        break;
+    }
+    case DC_SRC_KLIPPER: {
+        dc_moonraker_status_t st = {0};
+        dc_moonraker_get_status(&st);
+        printing = st.printing;
+        error = (st.printer == DC_PRINTER_ERROR);
+        bed = st.bed_temp;
+        break;
+    }
+    default:
+        break;
+    }
+    dv_rgb_update((int)dv_policy_get_target(), printing, error, bed);
 }
 
 // Button semantics from the stock firmware:
@@ -143,9 +174,19 @@ void app_main(void)
     ESP_ERROR_CHECK(dv_portal_start());
     ESP_ERROR_CHECK(dv_status_led_start());
     reflect_mode_on_led();
+    // WS2812 strips: init after the motor (ADC+LEDC) so RMT comes up last, per
+    // stock ordering. Non-fatal — a strip failure must not take down the vent.
+    esp_err_t rgb_err = dv_rgb_start();
+    if (rgb_err != ESP_OK) {
+        ESP_LOGW(TAG, "dv_rgb_start failed: %s (continuing without strip LEDs)",
+                 esp_err_to_name(rgb_err));
+    }
+    update_rgb_from_state();
     ESP_ERROR_CHECK(dv_button_start(on_button));
 
-    // Also mirror mode changes made via the web portal.
+    // Mirror mode changes onto the button LED, and refresh the strip color from
+    // live state each tick (printing/temp change independently of the target;
+    // dv_rgb skips the RMT write when the resolved color is unchanged).
     dv_policy_mode_t last_mode = dv_policy_get_mode();
     for (;;) {
         dv_policy_mode_t m = dv_policy_get_mode();
@@ -153,6 +194,7 @@ void app_main(void)
             reflect_mode_on_led();
             last_mode = m;
         }
+        update_rgb_from_state();
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }

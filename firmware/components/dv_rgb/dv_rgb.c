@@ -3,6 +3,8 @@
 #include "dv_motor.h"
 
 #include "led_strip.h"
+#include "led_strip_spi.h"
+#include "driver/spi_common.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -66,7 +68,7 @@ static uint32_t s_phase    = 0;
 static uint32_t s_frames   = 0;
 static uint8_t  s_last[3]  = {1, 2, 3};   // impossible first value forces a push
 
-static esp_err_t make_strip(gpio_num_t gpio, led_strip_handle_t *out)
+static esp_err_t make_strip(int index, gpio_num_t gpio, led_strip_handle_t *out)
 {
     led_strip_config_t strip = {
         .strip_gpio_num   = gpio,
@@ -75,13 +77,18 @@ static esp_err_t make_strip(gpio_num_t gpio, led_strip_handle_t *out)
         .led_model        = LED_MODEL_WS2812,
         .flags            = { .invert_out = false },
     };
-    led_strip_rmt_config_t rmt = {
-        .clk_src        = RMT_CLK_SRC_DEFAULT,
-        .resolution_hz  = 10 * 1000 * 1000,   // 10 MHz, standard WS2812 timing
-        .mem_block_symbols = 64,
-        .flags = { .with_dma = false },
+    // Drive WS2812 over SPI + DMA rather than RMT. The classic ESP32's RMT has no
+    // DMA, so its refill ISR can be starved by a WiFi/flash-cache-disable stall
+    // mid-frame — corrupting bits into a one-frame bright/white flicker. SPI
+    // streams the whole frame from RAM by DMA with no per-frame ISR, so it can't
+    // be starved. One SPI host per strip (this board leaves both HSPI+VSPI free);
+    // MOSI routes to the strip GPIO via the GPIO matrix, fine at WS2812's ~2.5 MHz.
+    led_strip_spi_config_t spi = {
+        .clk_src = SPI_CLK_SRC_DEFAULT,
+        .spi_bus = (index == 0) ? SPI2_HOST : SPI3_HOST,
+        .flags   = { .with_dma = true },
     };
-    return led_strip_new_rmt_device(&strip, &rmt, out);
+    return led_strip_new_spi_device(&strip, &spi, out);
 }
 
 // h: 0-65535, s/v: 0-255.
@@ -356,7 +363,7 @@ esp_err_t dv_rgb_start(void)
     cfg_load();
 
     for (int i = 0; i < strips; ++i) {
-        esp_err_t err = make_strip(STRIP_GPIO[i], &s_strips[i]);
+        esp_err_t err = make_strip(i, STRIP_GPIO[i], &s_strips[i]);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "strip %d (GPIO %d) init failed: %s",
                      i, STRIP_GPIO[i], esp_err_to_name(err));

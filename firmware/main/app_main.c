@@ -73,13 +73,14 @@ static void reflect_mode_on_led(void)
 // the color from the user's config: vent state, printing, or a temp gradient).
 static void update_rgb_from_state(void)
 {
-    bool  printing = false;
+    bool  printing = false, error = false;
     float bed = NAN;
     switch (dc_source_get()) {
     case DC_SRC_BAMBU: {
         dc_bambu_status_t st = {0};
         dc_bambu_get_status(&st);
         printing = st.printing;
+        error = st.error;
         bed = st.bed_temp;
         break;
     }
@@ -87,13 +88,14 @@ static void update_rgb_from_state(void)
         dc_moonraker_status_t st = {0};
         dc_moonraker_get_status(&st);
         printing = st.printing;
+        error = (st.printer == DC_PRINTER_ERROR);
         bed = st.bed_temp;
         break;
     }
     default:
         break;
     }
-    dv_rgb_update((int)dv_policy_get_target(), printing, bed);
+    dv_rgb_update((int)dv_policy_get_target(), printing, error, bed);
 }
 
 // Button semantics from the stock firmware:

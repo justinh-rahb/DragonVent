@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 #include <math.h>
@@ -20,6 +21,7 @@ static const char *TAG = "dv_rgb";
 // outputs. An unpopulated strip's GPIO just clocks out to nothing.
 #define LEDS_PER_STRIP  30
 #define MAX_STRIPS      2
+#define FRAME_MS        30    // ~33 fps animation refresh
 
 #define CFG_NVS_NS   "app_nvs"
 #define CFG_NVS_KEY  "lighting"
@@ -32,9 +34,10 @@ static const gpio_num_t STRIP_GPIO[MAX_STRIPS] = {
 static led_strip_handle_t s_strips[MAX_STRIPS];
 static int                s_count = 0;
 static SemaphoreHandle_t  s_lock  = NULL;
+static TaskHandle_t       s_task  = NULL;
 
-// Lighting config (defaults keep the validated blue/red behavior; the printing
-// and temp layers are opt-in so nothing changes until the user enables them).
+// Lighting config (defaults keep the validated blue/red behavior; printing/temp
+// and animation are opt-in so nothing changes until the user enables them).
 static dv_lighting_t s_cfg = {
     .enabled = true, .brightness = 255,
     .open    = {0, 0, 255},   // blue = cool
@@ -42,14 +45,19 @@ static dv_lighting_t s_cfg = {
     .printing = {0, 255, 0},  // green = active
     .use_printing = false, .use_temp = false,
     .temp_min_c = 25, .temp_max_c = 60,
+    .effect = DV_FX_SOLID, .speed = 128,
+    .error = {255, 0, 0}, .use_error = false,   // flashing red on a print error
 };
 
-// Latest state fed to the policy, and the last color actually pushed (so we skip
-// redundant RMT refreshes).
-static int     s_target   = DV_MOTOR_TARGET_CLOSED;
-static bool    s_printing = false;
-static float   s_bed      = NAN;
-static uint8_t s_last[3]  = {1, 1, 1};   // impossible first value forces a push
+// Latest state fed to the policy, the animation phase/frame counter, and the
+// last solid color pushed (so a steady color skips redundant RMT refreshes).
+static int      s_target   = DV_MOTOR_TARGET_CLOSED;
+static bool     s_printing = false;
+static bool     s_error    = false;
+static float    s_bed      = NAN;
+static uint32_t s_phase    = 0;
+static uint32_t s_frames   = 0;
+static uint8_t  s_last[3]  = {1, 2, 3};   // impossible first value forces a push
 
 static esp_err_t make_strip(gpio_num_t gpio, led_strip_handle_t *out)
 {
@@ -69,6 +77,24 @@ static esp_err_t make_strip(gpio_num_t gpio, led_strip_handle_t *out)
     return led_strip_new_rmt_device(&strip, &rmt, out);
 }
 
+// h: 0-65535, s/v: 0-255.
+static void hsv2rgb(uint16_t h, uint8_t s, uint8_t v, uint8_t out[3])
+{
+    uint8_t region = h / 10923;                 // 65536 / 6
+    uint16_t rem = (uint16_t)((h - region * 10923) * 6);
+    uint8_t p = (uint8_t)((v * (255 - s)) / 255);
+    uint8_t q = (uint8_t)((v * (255 - (s * rem) / 65535)) / 255);
+    uint8_t t = (uint8_t)((v * (255 - (s * (65535 - rem)) / 65535)) / 255);
+    switch (region) {
+    case 0:  out[0]=v; out[1]=t; out[2]=p; break;
+    case 1:  out[0]=q; out[1]=v; out[2]=p; break;
+    case 2:  out[0]=p; out[1]=v; out[2]=t; break;
+    case 3:  out[0]=p; out[1]=q; out[2]=v; break;
+    case 4:  out[0]=t; out[1]=p; out[2]=v; break;
+    default: out[0]=v; out[1]=p; out[2]=q; break;
+    }
+}
+
 // Push one solid color to every LED on every strip (assumes s_lock held).
 static void fill_locked(const uint8_t rgb[3])
 {
@@ -80,11 +106,9 @@ static void fill_locked(const uint8_t rgb[3])
     }
 }
 
-// Resolve the current lighting policy to a final RGB (brightness applied).
-static void compute(uint8_t out[3])
+// Resolve the state-based base color (open/closed/printing/temp), no brightness.
+static void compute_base(uint8_t out[3])
 {
-    if (!s_cfg.enabled) { out[0] = out[1] = out[2] = 0; return; }
-
     const uint8_t *base;
     uint8_t grad[3];
     if (s_cfg.use_printing && s_printing) {
@@ -101,30 +125,100 @@ static void compute(uint8_t out[3])
     } else {
         base = (s_target == DV_MOTOR_TARGET_OPEN) ? s_cfg.open : s_cfg.closed;
     }
-    for (int k = 0; k < 3; ++k) {
-        out[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
-    }
+    out[0] = base[0]; out[1] = base[1]; out[2] = base[2];
 }
 
-static void apply_locked(void)
+// Render one frame from the current config + state (assumes s_lock held).
+static void render_locked(void)
 {
-    uint8_t rgb[3];
-    compute(rgb);
-    if (memcmp(rgb, s_last, 3) != 0) {
+    if (!s_cfg.enabled) {
+        const uint8_t off[3] = {0, 0, 0};
+        if (memcmp(off, s_last, 3) != 0) { fill_locked(off); memcpy(s_last, off, 3); }
+        return;
+    }
+
+    // A print error takes top precedence and flashes to demand attention,
+    // overriding whatever effect is selected.
+    if (s_cfg.use_error && s_error) {
+        bool on = ((s_frames / 25) & 1) == 0;   // ~0.75 s on / 0.75 s off
+        uint8_t rgb[3] = {0, 0, 0};
+        if (on) for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)s_cfg.error[k] * s_cfg.brightness / 255);
         fill_locked(rgb);
-        memcpy(s_last, rgb, 3);
+        s_last[0] = 0x55;   // invalidate solid dedup
+        return;
+    }
+
+    switch (s_cfg.effect) {
+    case DV_FX_CYCLE: {
+        uint8_t rgb[3];
+        hsv2rgb((uint16_t)s_phase, 255, s_cfg.brightness, rgb);
+        fill_locked(rgb);                     // animated -> always refresh
+        s_last[0] = ~rgb[0];                  // invalidate solid dedup
+        break;
+    }
+    case DV_FX_RAINBOW: {
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                uint16_t hue = (uint16_t)(s_phase + (uint32_t)j * (65536 / LEDS_PER_STRIP));
+                uint8_t rgb[3];
+                hsv2rgb(hue, 255, s_cfg.brightness, rgb);
+                led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0xAA;                      // invalidate solid dedup
+        break;
+    }
+    case DV_FX_BREATHE: {
+        uint8_t base[3];
+        compute_base(base);
+        uint16_t ph = (uint16_t)s_phase;       // triangle wave 0..255..0
+        uint8_t wave = (ph < 32768) ? (uint8_t)(ph >> 7) : (uint8_t)(255 - ((ph - 32768) >> 7));
+        // never fully black out: floor at ~15%.
+        uint16_t lvl = (uint16_t)s_cfg.brightness * (39 + (uint16_t)wave * 216 / 255) / 255;
+        uint8_t rgb[3];
+        for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * lvl / 255);
+        fill_locked(rgb);
+        s_last[0] = ~rgb[0];
+        break;
+    }
+    case DV_FX_SOLID:
+    default: {
+        uint8_t base[3];
+        compute_base(base);
+        uint8_t rgb[3];
+        for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
+        if (memcmp(rgb, s_last, 3) != 0) { fill_locked(rgb); memcpy(s_last, rgb, 3); }
+        break;
+    }
     }
 }
 
-void dv_rgb_update(int target, bool printing, float bed_temp_c)
+static void anim_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        render_locked();
+        s_frames++;
+        if (s_cfg.enabled && s_cfg.effect != DV_FX_SOLID) {
+            s_phase += 8 + (uint32_t)s_cfg.speed * 4;   // hue units per frame
+        }
+        xSemaphoreGive(s_lock);
+        vTaskDelay(pdMS_TO_TICKS(FRAME_MS));
+    }
+}
+
+void dv_rgb_update(int target, bool printing, bool error, float bed_temp_c)
 {
     if (s_lock == NULL) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_target = target;
     s_printing = printing;
+    s_error = error;
     s_bed = bed_temp_c;
-    apply_locked();
     xSemaphoreGive(s_lock);
+    // The animation task renders on the next frame.
 }
 
 void dv_rgb_get_config(dv_lighting_t *out)
@@ -141,26 +235,31 @@ esp_err_t dv_rgb_set_config(const dv_lighting_t *cfg)
     if (s_lock == NULL) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_cfg = *cfg;
+    s_last[0] = 0x7F; s_last[1] = 0x3F; s_last[2] = 0x1F;   // force a repaint
     nvs_handle_t h;
     if (nvs_open(CFG_NVS_NS, NVS_READWRITE, &h) == ESP_OK) {
         nvs_set_blob(h, CFG_NVS_KEY, &s_cfg, sizeof(s_cfg));
         nvs_commit(h);
         nvs_close(h);
     }
-    apply_locked();
     xSemaphoreGive(s_lock);
     return ESP_OK;
 }
 
+// Tolerant load: a shorter stored blob (an older config layout) is copied into
+// the front of s_cfg, leaving any newer fields at their compiled defaults.
 static void cfg_load(void)
 {
     nvs_handle_t h;
     if (nvs_open(CFG_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
-    dv_lighting_t stored;
-    size_t sz = sizeof(stored);
-    if (nvs_get_blob(h, CFG_NVS_KEY, &stored, &sz) == ESP_OK && sz == sizeof(stored)) {
-        s_cfg = stored;
-        ESP_LOGI(TAG, "loaded lighting config from NVS");
+    size_t need = 0;
+    if (nvs_get_blob(h, CFG_NVS_KEY, NULL, &need) == ESP_OK && need > 0) {
+        uint8_t buf[sizeof(s_cfg)];
+        size_t cap = sizeof(buf);
+        if (need <= cap && nvs_get_blob(h, CFG_NVS_KEY, buf, &cap) == ESP_OK) {
+            memcpy(&s_cfg, buf, cap);
+            ESP_LOGI(TAG, "loaded lighting config (%u B) from NVS", (unsigned)cap);
+        }
     }
     nvs_close(h);
 }
@@ -197,8 +296,8 @@ esp_err_t dv_rgb_start(void)
     }
     ESP_LOGI(TAG, "initialized %d WS2812 strip(s), %d LEDs each", s_count, LEDS_PER_STRIP);
 
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    apply_locked();   // initial color from defaults/config
-    xSemaphoreGive(s_lock);
+    if (xTaskCreate(anim_task, "dv_rgb", 3072, NULL, 4, &s_task) != pdPASS) {
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }

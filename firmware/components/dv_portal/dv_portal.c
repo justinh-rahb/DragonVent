@@ -356,6 +356,10 @@ static cJSON *lighting_json(void)
     cJSON_AddBoolToObject(root, "use_temp", c.use_temp);
     cJSON_AddNumberToObject(root, "temp_min_c", c.temp_min_c);
     cJSON_AddNumberToObject(root, "temp_max_c", c.temp_max_c);
+    cJSON_AddNumberToObject(root, "effect", c.effect);
+    cJSON_AddNumberToObject(root, "speed", c.speed);
+    add_rgb(root, "error", c.error);
+    cJSON_AddBoolToObject(root, "use_error", c.use_error);
     cJSON_AddNumberToObject(root, "strips", dv_rgb_strip_count());
     return root;
 }
@@ -394,9 +398,15 @@ static esp_err_t lighting_post(httpd_req_t *req)
     }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_min_c")) && cJSON_IsNumber(e)) c.temp_min_c = (uint8_t)e->valueint;
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_max_c")) && cJSON_IsNumber(e)) c.temp_max_c = (uint8_t)e->valueint;
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) c.effect = (uint8_t)(e->valueint & 3);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "speed")) && cJSON_IsNumber(e)) {
+        int v = e->valueint; c.speed = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "use_error")) && cJSON_IsBool(e)) c.use_error = cJSON_IsTrue(e);
     patch_rgb(body, "open", c.open);
     patch_rgb(body, "closed", c.closed);
     patch_rgb(body, "printing", c.printing);
+    patch_rgb(body, "error", c.error);
     cJSON_Delete(body);
 
     dv_rgb_set_config(&c);

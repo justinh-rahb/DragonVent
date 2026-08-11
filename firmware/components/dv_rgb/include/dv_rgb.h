@@ -19,6 +19,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// Animated effects. SOLID uses the state color (open/closed/printing/temp); the
+// others animate and ignore the state color except BREATHE, which pulses it.
+typedef enum {
+    DV_FX_SOLID = 0,   // steady, state-based color
+    DV_FX_CYCLE,       // whole strip cycles through the hue wheel together
+    DV_FX_RAINBOW,     // rainbow spread across the strip, scrolling
+    DV_FX_BREATHE,     // state color with a breathing brightness pulse
+} dv_light_fx_t;
+
+// NOTE: append new fields at the END — cfg_load tolerates a shorter stored blob
+// (older versions keep their values; new fields fall back to these defaults).
 typedef struct {
     bool    enabled;         // master on/off
     uint8_t brightness;      // 0-255 global scale
@@ -29,14 +40,19 @@ typedef struct {
     bool    use_temp;        // blend open->closed by bed/chamber temp
     uint8_t temp_min_c;      // temp at the "cool" end of the gradient
     uint8_t temp_max_c;      // temp at the "hot" end
+    uint8_t effect;          // dv_light_fx_t
+    uint8_t speed;           // 0-255 animation speed (effect != SOLID)
+    uint8_t error[3];        // RGB shown (flashing) when the print errors
+    bool    use_error;       // flash the error color on a print error
 } dv_lighting_t;
 
 // Detect the connected strips, load saved config, drive the initial color.
 esp_err_t dv_rgb_start(void);
 
-// Recompute the strip color from current state and apply it. target is a
-// dv_motor_target_t; bed_temp_c may be NAN when no printer/telemetry.
-void dv_rgb_update(int target, bool printing, float bed_temp_c);
+// Feed current state to the lighting policy. target is a dv_motor_target_t;
+// error flags a printer error (flashes the error color, top precedence);
+// bed_temp_c may be NAN when there's no printer/telemetry.
+void dv_rgb_update(int target, bool printing, bool error, float bed_temp_c);
 
 // Get / set the lighting config. set persists to NVS and re-applies immediately.
 void      dv_rgb_get_config(dv_lighting_t *out);

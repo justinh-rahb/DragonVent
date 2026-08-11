@@ -10,8 +10,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "dv_motor";
@@ -26,20 +28,45 @@ static const char *TAG = "dv_motor";
 #define FADE_UP_MS          20                  // 0→full over 20 ms
 #define FADE_DOWN_MS        10                  // full→0 over 10 ms
 #define DEAD_TIME_MS        500                 // wait between direction reversals
-#define VERIFY_TIMEOUT_MS   200                 // hall must confirm within this window
+#define VERIFY_TIMEOUT_MS   1200                // seat must confirm within this window
+                                                // (vent travel is ~400-540 ms; the old
+                                                // 200 ms fired mid-travel and forced a retry)
 #define RETRY_PAUSE_MS      50                  // brief stop between retries
 #define MAX_RETRIES         4
 #define TICK_MS             10                  // task loop period
 
-// Stock hall thresholds. These are calibrated millivolts, not ADC counts.
-// The unsigned width tests preserve stock's inclusive upper bounds.
-#define HALL_OPEN_LO_MV        0x280   // 640 mV
-#define HALL_OPEN_WIDTH_MV     0x141   // through 960 mV inclusive
-#define HALL_CLOSED_LO_MV      0x550   // 1360 mV
-#define HALL_CLOSED_WIDTH_MV   0x141   // through 1680 mV inclusive
-#define HALL_PAST_CLOSED_LO_MV 2080
-#define HALL_PAST_CLOSED_WIDTH 0x173   // through 2450 mV inclusive
+// Per-unit hall endstop calibration.
+//
+// Stock (and our earlier port) used FIXED calibrated-mV bands — OPEN 640-960,
+// CLOSED 1360-1680. On-hardware that turned out to be a per-board gamble: this
+// unit's ADC/hall gain reads ~20-25% low, so its real endstops sit at ~590 mV
+// (open) and ~1175 mV (closed) — squarely in the *gaps* of the fixed bands, so
+// the classifier never confirmed and the motor re-drove MAX_RETRIES times (the
+// audible "buzz") even though the vent had physically seated. Rather than bake
+// in one board's numbers, we LEARN each unit's endstop levels at runtime and
+// classify against them.
+//
+// The learning signal is the hard stop itself: when the vent seats, the hall
+// reading goes dead-stable (settles). We detect that settle, record the level
+// for the direction we were driving, and persist it. No magic thresholds; works
+// on any unit regardless of ADC gain or hall polarity.
+#define SETTLE_DELTA_MV        45      // samples within this of each other = stable
+#define SETTLE_TICKS           6       // ~60 ms of continuous stability = seated
+#define MOVED_DELTA_MV         200     // hall moved this far from start = in motion
+#define STUCK_SETTLE_MS        350     // stable-from-start this long = already seated
+#define MIN_SEPARATION_MV      300     // learned OPEN/CLOSED must differ by >= this
+#define LEARN_WRITE_DELTA_MV   20      // only persist when a level shifts > this
+#define CLASSIFY_MARGIN_MV     250     // in-band half-width around a learned level
 #define ARRIVED_DEBOUNCE_TICKS 3       // 30 ms of continuous in-band samples
+
+// Persisted per-group endstop levels. -1 = not yet learned.
+#define CAL_NVS_NS   "app_nvs"
+#define CAL_NVS_KEY  "hall_cal"
+typedef struct {
+    int16_t open_mv;
+    int16_t closed_mv;
+} hall_cal_t;
+static hall_cal_t s_cal[DV_MOTOR_GROUP_COUNT];
 
 // Stock config-detect thresholds, also calibrated millivolts. Readings in the
 // deliberate gaps mean "keep current config".
@@ -66,10 +93,16 @@ typedef struct {
     dir_t             dir;         // channel currently energised
     bool              running;
     int               retries;
-    int               arrived_consec;      // consecutive ticks reading target
+    int               arrived_consec;      // consecutive ticks reading target (calibrated fast-path)
+    bool              arrived;             // reached target and holding; don't re-drive
     bool              gave_up;             // exhausted retries; wait for new target
     TickType_t        drive_started_tick;
     dv_motor_hall_t   hall_cached;
+    // Settle detector — drive-scoped, reset at the start of every drive.
+    int               drive_start_mv;      // hall mv when this drive began
+    int               settle_ref;          // reference mv for the stability window
+    int               settle_count;        // consecutive samples within SETTLE_DELTA_MV
+    bool              moved;               // hall has left the start region this drive
 } group_state_t;
 
 static int              s_active_groups = 0;
@@ -106,18 +139,60 @@ static inline dv_motor_hall_t hall_for_target(dv_motor_target_t t)
     return DV_HALL_INVALID;
 }
 
-static dv_motor_hall_t classify_hall_mv(int mv)
+// ---------- per-unit hall calibration ----------
+
+static void cal_load(void)
+{
+    for (int g = 0; g < DV_MOTOR_GROUP_COUNT; ++g) {
+        s_cal[g].open_mv   = -1;
+        s_cal[g].closed_mv = -1;
+    }
+    nvs_handle_t h;
+    if (nvs_open(CAL_NVS_NS, NVS_READONLY, &h) != ESP_OK) return;
+    size_t sz = sizeof(s_cal);
+    nvs_get_blob(h, CAL_NVS_KEY, s_cal, &sz);   // leaves defaults on any error
+    nvs_close(h);
+}
+
+static void cal_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(CAL_NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, CAL_NVS_KEY, s_cal, sizeof(s_cal));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+// Record a freshly-seated endstop level for one group/direction. Rejects
+// implausible values (too close to the opposite endstop, e.g. a mid-travel jam)
+// and skips the flash write when the level hasn't meaningfully changed.
+static void learn_level(int g, dv_motor_target_t dir, int mv)
+{
+    if (mv <= 0) return;
+    int16_t *slot  = (dir == DV_MOTOR_TARGET_OPEN) ? &s_cal[g].open_mv : &s_cal[g].closed_mv;
+    int16_t  other = (dir == DV_MOTOR_TARGET_OPEN) ? s_cal[g].closed_mv : s_cal[g].open_mv;
+    if (other >= 0 && abs(mv - other) < MIN_SEPARATION_MV) return;
+    if (*slot >= 0 && abs(mv - *slot) <= LEARN_WRITE_DELTA_MV) return;
+    *slot = (int16_t)mv;
+    cal_save();
+    ESP_LOGI(TAG, "grp=%d learned %s endstop = %d mV",
+             g, dir == DV_MOTOR_TARGET_OPEN ? "OPEN" : "CLOSED", mv);
+}
+
+// Classify a reading against this group's LEARNED endstop levels. Until a level
+// is learned it reads MID_HIGH (in transit), which is correct — arrival is then
+// confirmed purely by settle detection, which is also what learns the level.
+static dv_motor_hall_t classify_hall_mv(int g, int mv)
 {
     if (mv == 0) return DV_HALL_INVALID;
-    if ((uint32_t)(mv - HALL_CLOSED_LO_MV) < HALL_CLOSED_WIDTH_MV) {
-        return DV_HALL_CLOSED;
+    int o = s_cal[g].open_mv, c = s_cal[g].closed_mv;
+    int margin = CLASSIFY_MARGIN_MV;
+    if (o >= 0 && c >= 0) {
+        int half = abs(o - c) / 2 - 20;   // keep the two bands from overlapping
+        if (half > 0 && half < margin) margin = half;
     }
-    if ((uint32_t)(mv - HALL_OPEN_LO_MV) < HALL_OPEN_WIDTH_MV) {
-        return DV_HALL_OPEN;
-    }
-    if ((uint32_t)(mv - HALL_PAST_CLOSED_LO_MV) < HALL_PAST_CLOSED_WIDTH) {
-        return DV_HALL_MID_LOW;
-    }
+    if (o >= 0 && abs(mv - o) <= margin) return DV_HALL_OPEN;
+    if (c >= 0 && abs(mv - c) <= margin) return DV_HALL_CLOSED;
     return DV_HALL_MID_HIGH;
 }
 
@@ -143,7 +218,7 @@ static dv_motor_hall_t read_hall(int g)
     }
     s_hall_raw_last[g] = raw;
     s_hall_mv_last[g] = mv;
-    return classify_hall_mv(mv);
+    return classify_hall_mv(g, mv);
 }
 
 // Read the config-detect ADC and classify to an active-group count. Returns
@@ -225,6 +300,12 @@ static void begin_drive_toward(int g, dv_motor_target_t target)
     st->applied = target;
     st->running = true;
     st->drive_started_tick = xTaskGetTickCount();
+    // Reset the settle detector against the position we're starting from.
+    st->drive_start_mv = s_hall_mv_last[g];
+    st->settle_ref     = s_hall_mv_last[g];
+    st->settle_count   = 0;
+    st->moved          = false;
+    st->arrived_consec = 0;
 }
 
 // ---------- hot-plug reconfiguration ----------
@@ -303,6 +384,31 @@ static void tick_hwconfig(void)
 
 // ---------- state machine tick (per group) ----------
 
+// Advance the settle detector with one sample. Flags "moved" once the reading
+// leaves the region this drive started in, and counts consecutive stable samples.
+static void settle_update(int g, int mv)
+{
+    group_state_t *st = &s_groups[g];
+    if (abs(mv - st->settle_ref) <= SETTLE_DELTA_MV) {
+        if (st->settle_count < 100000) st->settle_count++;
+    } else {
+        st->settle_ref   = mv;
+        st->settle_count = 0;
+    }
+    if (abs(mv - st->drive_start_mv) > MOVED_DELTA_MV) st->moved = true;
+}
+
+// Seated == reading stable for SETTLE_TICKS AND either it traveled to get here
+// (moved) or it has been stable from the very start long enough that it must
+// already be against this endstop.
+static bool group_seated(int g, TickType_t elapsed)
+{
+    group_state_t *st = &s_groups[g];
+    if (st->settle_count < SETTLE_TICKS) return false;
+    if (st->moved) return true;
+    return elapsed >= pdMS_TO_TICKS(STUCK_SETTLE_MS);
+}
+
 static void tick_group(int g)
 {
     group_state_t *st = &s_groups[g];
@@ -314,17 +420,7 @@ static void tick_group(int g)
 
     dv_motor_hall_t hall = read_hall(g);
     st->hall_cached = hall;
-
-    // Diagnostic: while a group is actively driving, log every sample so we
-    // can see the whole trajectory (the 2026-07-10 diag caught a non-monotonic
-    // hall response that a 1 Hz log would have missed).
-    if (st->running) {
-        ESP_LOGI(TAG, "grp=%d driving (want=%s) hall_raw=%d hall_mv=%d hall_state=%d",
-                 g,
-                 want == DV_MOTOR_TARGET_OPEN   ? "OPEN"
-               : want == DV_MOTOR_TARGET_CLOSED ? "CLOSED" : "STOP",
-                 s_hall_raw_last[g], s_hall_mv_last[g], (int)hall);
-    }
+    int mv = s_hall_mv_last[g];
 
     // Stop requested.
     if (want == DV_MOTOR_TARGET_STOP) {
@@ -332,69 +428,84 @@ static void tick_group(int g)
         st->applied  = DV_MOTOR_TARGET_STOP;
         st->retries  = 0;
         st->arrived_consec = 0;
+        st->arrived  = false;
         st->gave_up  = false;
         return;
     }
 
     // Target changed since last drive → clear state and (re)start.
     if (st->applied != want) {
-        st->retries        = 0;
-        st->arrived_consec = 0;
-        st->gave_up        = false;
-        begin_drive_toward(g, want);
+        st->retries = 0;
+        st->gave_up = false;
+        st->arrived = false;
+        begin_drive_toward(g, want);   // also resets the settle detector
         return;
     }
 
-    // Already at (or matched to) the target hall band. Debounce so a single
-    // mid-travel spike doesn't stop us early.
-    if (hall == hall_for_target(want)) {
-        st->arrived_consec++;
-        if (st->arrived_consec >= ARRIVED_DEBOUNCE_TICKS) {
-            if (st->running) {
-                ESP_LOGI(TAG, "grp=%d arrived (want=%s hall_raw=%d hall_mv=%d hall_state=%d)",
-                         g,
-                         want == DV_MOTOR_TARGET_OPEN ? "OPEN" : "CLOSED",
-                         s_hall_raw_last[g], s_hall_mv_last[g], (int)hall);
-                stop_drive(g);
-            }
-            st->retries = 0;
-        }
-        return;
-    }
-    // Not on target this sample — reset the debounce counter.
-    st->arrived_consec = 0;
+    // Reached the target and holding — stay stopped until dv_policy commands a
+    // different target. Without this latch we'd re-drive every tick (arrive →
+    // stop → !running → re-drive), churning the LEDC fades until the interrupt
+    // watchdog fires. Cleared above when the target changes.
+    if (st->arrived) return;
 
-    // If we've given up on this target, stay stopped until dv_policy asks for
-    // something different. Prevents the "retry forever after MAX_RETRIES" loop
-    // that the field test caught (probably brownout root cause).
+    // Given up on this target: stay stopped until dv_policy asks for something
+    // else. Prevents the "retry forever after MAX_RETRIES" loop the field test
+    // caught (probable brownout root cause).
     if (st->gave_up) return;
 
-    // Motor may have been stopped by give-up on the previous cycle. Kick it
-    // back on if the target still wants motion.
+    // Motor may have been stopped by a give-up last cycle; kick it back on.
     if (!st->running) {
         begin_drive_toward(g, want);
         return;
     }
 
-    // Already driving; give the motor time to reach the target.
+    settle_update(g, mv);
     TickType_t elapsed = xTaskGetTickCount() - st->drive_started_tick;
+
+    // Diagnostic: log every sample while driving so we can see the whole
+    // trajectory (a 2026-07-10 diag caught a non-monotonic hall response a 1 Hz
+    // log would miss). settle/moved make the seat decision auditable.
+    ESP_LOGI(TAG, "grp=%d driving (want=%s) hall_raw=%d hall_mv=%d hall_state=%d settle=%d moved=%d",
+             g, want == DV_MOTOR_TARGET_OPEN ? "OPEN" : "CLOSED",
+             s_hall_raw_last[g], mv, (int)hall, st->settle_count, (int)st->moved);
+
+    // Fast path on a calibrated unit: steadily reading the target's learned band
+    // is an arrival even before the mechanical settle window fills.
+    bool in_band = (hall == hall_for_target(want));
+    if (in_band) {
+        if (++st->arrived_consec < ARRIVED_DEBOUNCE_TICKS) return;
+    } else {
+        st->arrived_consec = 0;
+    }
+
+    // Primary path: the vent seated (hall went dead-stable at the hard stop).
+    if (in_band || group_seated(g, elapsed)) {
+        learn_level(g, want, mv);   // record this unit's endstop level, persist
+        ESP_LOGI(TAG, "grp=%d arrived (want=%s hall_mv=%d) in %d ms",
+                 g, want == DV_MOTOR_TARGET_OPEN ? "OPEN" : "CLOSED",
+                 mv, (int)(elapsed * portTICK_PERIOD_MS));
+        stop_drive(g);
+        st->arrived = true;
+        st->retries = 0;
+        return;
+    }
+
+    // Not seated yet — give the drive its full window before retrying.
     if (elapsed < pdMS_TO_TICKS(VERIFY_TIMEOUT_MS)) return;
 
-    // Timed out without hitting the endpoint — retry or give up.
+    // Timed out without seating — retry or give up (safety only; a healthy vent
+    // seats and settles well within the window).
     if (st->retries < MAX_RETRIES) {
         st->retries++;
-        ESP_LOGW(TAG, "grp=%d stalled; retry %d/%d (hall_raw=%d hall_mv=%d hall_state=%d)",
-                 g, st->retries, MAX_RETRIES,
-                 s_hall_raw_last[g], s_hall_mv_last[g], (int)hall);
+        ESP_LOGW(TAG, "grp=%d stalled; retry %d/%d (hall_mv=%d hall_state=%d)",
+                 g, st->retries, MAX_RETRIES, mv, (int)hall);
         stop_drive(g);
         vTaskDelay(pdMS_TO_TICKS(RETRY_PAUSE_MS));
         begin_drive_toward(g, want);
     } else {
-        ESP_LOGE(TAG, "grp=%d gave up after %d retries (want=%s hall_raw=%d hall_mv=%d hall_state=%d)",
+        ESP_LOGE(TAG, "grp=%d gave up after %d retries (want=%s hall_mv=%d hall_state=%d)",
                  g, MAX_RETRIES,
-                 want == DV_MOTOR_TARGET_OPEN   ? "OPEN"
-               : want == DV_MOTOR_TARGET_CLOSED ? "CLOSED" : "STOP",
-                 s_hall_raw_last[g], s_hall_mv_last[g], (int)hall);
+                 want == DV_MOTOR_TARGET_OPEN ? "OPEN" : "CLOSED", mv, (int)hall);
         stop_drive(g);
         st->gave_up = true;
     }
@@ -472,6 +583,13 @@ esp_err_t dv_motor_init(void)
     }
 
     memset(s_groups, 0, sizeof(s_groups));
+    cal_load();
+    for (int g = 0; g < DV_MOTOR_GROUP_COUNT; ++g) {
+        if (s_cal[g].open_mv >= 0 || s_cal[g].closed_mv >= 0) {
+            ESP_LOGI(TAG, "grp=%d hall cal: open=%d closed=%d mV",
+                     g, s_cal[g].open_mv, s_cal[g].closed_mv);
+        }
+    }
     s_lock = xSemaphoreCreateMutex();
     if (s_lock == NULL) return ESP_ERR_NO_MEM;
 

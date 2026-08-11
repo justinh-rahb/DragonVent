@@ -15,8 +15,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
-#include <string.h>
-#include <stdlib.h>
 
 static const char *TAG = "dragonvent";
 
@@ -104,40 +102,28 @@ static void on_button(dv_button_id_t id, dv_button_event_t ev)
     }
 }
 
-// Device-specific stock carry-over. WiFi is carried by dc_wifi in core; the bound
-// Bambu printer is a control-source concern, so it's carried here. Stock panda_vent
-// stores it in the app_nvs "bambu_mqtt_info" blob (RE'd from a live bind):
-//   host[16]@0, access_code[9]@16, serial[16]@25, name@41 (NUL-terminated strings).
-// First boot after an OTA-over-stock only: if Bambu isn't already configured and the
-// stock blob has a printer, seed dc_bambu's config and select Bambu as the source so
-// the vent keeps talking to the same printer without re-provisioning.
-static void carry_over_stock_bambu(void)
+// Device-specific control-source selection after an OTA-over-stock. dc_wifi's
+// migrate (core) already carries all stock config across — WiFi, Moonraker, HA, and
+// the bound Bambu printer (bb_host/bb_serial/bb_code). Choosing which source to run
+// is device policy, not core's: the stock Panda Vent is a Bambu device, so on first
+// boot (no source persisted yet) adopt Bambu if a printer was carried. Guarded on the
+// ctl_src key being absent, so it fires exactly once and never overrides a later choice.
+static void select_migrated_source(void)
 {
-    dc_bambu_config_t cur = {0};
-    dc_bambu_get_config(&cur);
-    if (cur.host[0]) return;   // already provisioned — never clobber
-
     nvs_handle_t h;
     if (nvs_open("app_nvs", NVS_READONLY, &h) != ESP_OK) return;
-    size_t blen = 0;
-    if (nvs_get_blob(h, "bambu_mqtt_info", NULL, &blen) == ESP_OK && blen >= 41) {
-        uint8_t *b = calloc(1, blen);
-        if (b && nvs_get_blob(h, "bambu_mqtt_info", b, &blen) == ESP_OK) {
-            dc_bambu_config_t cfg = {0};
-            memcpy(cfg.host,   b,      15);   // host[16]@0
-            memcpy(cfg.code,   b + 16,  8);   // access_code[9]@16
-            memcpy(cfg.serial, b + 25, 15);   // serial[16]@25
-            if (cfg.host[0] && cfg.serial[0]) {
-                dc_bambu_set_config(&cfg);
-                dc_source_set(DC_SRC_BAMBU);
-                ESP_LOGW(TAG, "carried stock Bambu printer %s (serial %s); source -> Bambu",
-                         cfg.host, cfg.serial);
-                dc_evlog_add("carried stock Bambu %s", cfg.serial);
-            }
-        }
-        free(b);
-    }
+    uint8_t src = 0;
+    bool already_chosen = (nvs_get_u8(h, "ctl_src", &src) == ESP_OK);
     nvs_close(h);
+    if (already_chosen) return;
+
+    dc_bambu_config_t bb = {0};
+    dc_bambu_get_config(&bb);
+    if (bb.host[0]) {
+        dc_source_set(DC_SRC_BAMBU);   // persists ctl_src, so this runs only once
+        ESP_LOGW(TAG, "carried Bambu printer %s; control source -> Bambu", bb.host);
+        dc_evlog_add("migrated source -> Bambu");
+    }
 }
 
 void app_main(void)
@@ -151,7 +137,7 @@ void app_main(void)
     ESP_ERROR_CHECK(dv_motor_init());
     ESP_ERROR_CHECK(configure_network_identity());
     ESP_ERROR_CHECK(dc_wifi_start());
-    carry_over_stock_bambu();   // device-specific: adopt a stock-bound Bambu printer
+    select_migrated_source();   // device-specific: adopt a stock-bound Bambu printer
     ESP_ERROR_CHECK(start_control_source());
     ESP_ERROR_CHECK(dv_policy_start());
     ESP_ERROR_CHECK(dv_portal_start());

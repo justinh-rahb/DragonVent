@@ -14,6 +14,7 @@
 #include "dc_source.h"
 #include "dc_wifi.h"
 #include "dv_motor.h"
+#include "dv_rgb.h"
 #include "dv_policy.h"
 #include "esp_app_desc.h"
 #include "esp_http_server.h"
@@ -332,6 +333,77 @@ static esp_err_t settings_post(httpd_req_t *req)
     return send_json(req, reply);
 }
 
+static void add_rgb(cJSON *root, const char *key, const uint8_t c[3])
+{
+    cJSON *a = cJSON_AddArrayToObject(root, key);
+    cJSON_AddItemToArray(a, cJSON_CreateNumber(c[0]));
+    cJSON_AddItemToArray(a, cJSON_CreateNumber(c[1]));
+    cJSON_AddItemToArray(a, cJSON_CreateNumber(c[2]));
+}
+
+static cJSON *lighting_json(void)
+{
+    dv_lighting_t c;
+    dv_rgb_get_config(&c);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "api_version", 2);
+    cJSON_AddBoolToObject(root, "enabled", c.enabled);
+    cJSON_AddNumberToObject(root, "brightness", c.brightness);
+    add_rgb(root, "open", c.open);
+    add_rgb(root, "closed", c.closed);
+    add_rgb(root, "printing", c.printing);
+    cJSON_AddBoolToObject(root, "use_printing", c.use_printing);
+    cJSON_AddBoolToObject(root, "use_temp", c.use_temp);
+    cJSON_AddNumberToObject(root, "temp_min_c", c.temp_min_c);
+    cJSON_AddNumberToObject(root, "temp_max_c", c.temp_max_c);
+    cJSON_AddNumberToObject(root, "strips", dv_rgb_strip_count());
+    return root;
+}
+
+static esp_err_t lighting_get(httpd_req_t *req) { return send_json(req, lighting_json()); }
+
+// Parse an [r,g,b] array (0-255) into out, only if present + valid.
+static void patch_rgb(cJSON *body, const char *key, uint8_t out[3])
+{
+    cJSON *a = cJSON_GetObjectItemCaseSensitive(body, key);
+    if (!cJSON_IsArray(a) || cJSON_GetArraySize(a) != 3) return;
+    for (int i = 0; i < 3; ++i) {
+        cJSON *e = cJSON_GetArrayItem(a, i);
+        if (!cJSON_IsNumber(e)) return;
+    }
+    for (int i = 0; i < 3; ++i) {
+        int v = cJSON_GetArrayItem(a, i)->valueint;
+        out[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+}
+
+static esp_err_t lighting_post(httpd_req_t *req)
+{
+    if (auth_reject(req)) return ESP_OK;
+    cJSON *body = recv_json(req);
+    if (!body) return api_error(req, "400 Bad Request", "invalid json");
+
+    dv_lighting_t c;
+    dv_rgb_get_config(&c);   // start from current; patch only the fields present
+    cJSON *e;
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "enabled")) && cJSON_IsBool(e)) c.enabled = cJSON_IsTrue(e);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "use_printing")) && cJSON_IsBool(e)) c.use_printing = cJSON_IsTrue(e);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "use_temp")) && cJSON_IsBool(e)) c.use_temp = cJSON_IsTrue(e);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "brightness")) && cJSON_IsNumber(e)) {
+        int v = e->valueint; c.brightness = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    }
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_min_c")) && cJSON_IsNumber(e)) c.temp_min_c = (uint8_t)e->valueint;
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_max_c")) && cJSON_IsNumber(e)) c.temp_max_c = (uint8_t)e->valueint;
+    patch_rgb(body, "open", c.open);
+    patch_rgb(body, "closed", c.closed);
+    patch_rgb(body, "printing", c.printing);
+    cJSON_Delete(body);
+
+    dv_rgb_set_config(&c);
+    ++s_api_revision;
+    return send_json(req, lighting_json());
+}
+
 static cJSON *field(cJSON *fields, const char *key, const char *label, const char *type, const char *value)
 {
     cJSON *item = cJSON_CreateObject();
@@ -532,6 +604,8 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/command", .method = HTTP_POST, .handler = command_post },
         { .uri = "/api/v2/settings", .method = HTTP_GET, .handler = settings_get },
         { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = settings_post },
+        { .uri = "/api/v2/lighting", .method = HTTP_GET, .handler = lighting_get },
+        { .uri = "/api/v2/lighting", .method = HTTP_POST, .handler = lighting_post },
     };
     const dc_portal_config_t config = {
         .product = "dragonvent", .display_name = "DragonVent",

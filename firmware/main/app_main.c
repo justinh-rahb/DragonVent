@@ -13,6 +13,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include <math.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -68,15 +69,31 @@ static void reflect_mode_on_led(void)
                           : DV_STATUS_LED_BLINK);
 }
 
-// Vent strip color follows the vent: open = airflow = cool = blue,
-// closed = sealed = hot = red. (These defaults will become user-configurable.)
-static void reflect_vent_on_rgb(void)
+// Feed current vent + printer state to the RGB lighting policy (which decides
+// the color from the user's config: vent state, printing, or a temp gradient).
+static void update_rgb_from_state(void)
 {
-    switch (dv_policy_get_target()) {
-    case DV_MOTOR_TARGET_OPEN:   dv_rgb_set(0, 0, 255); break;   // blue
-    case DV_MOTOR_TARGET_CLOSED: dv_rgb_set(255, 0, 0); break;   // red
-    default: break;                                             // stop: leave as-is
+    bool  printing = false;
+    float bed = NAN;
+    switch (dc_source_get()) {
+    case DC_SRC_BAMBU: {
+        dc_bambu_status_t st = {0};
+        dc_bambu_get_status(&st);
+        printing = st.printing;
+        bed = st.bed_temp;
+        break;
     }
+    case DC_SRC_KLIPPER: {
+        dc_moonraker_status_t st = {0};
+        dc_moonraker_get_status(&st);
+        printing = st.printing;
+        bed = st.bed_temp;
+        break;
+    }
+    default:
+        break;
+    }
+    dv_rgb_update((int)dv_policy_get_target(), printing, bed);
 }
 
 // Button semantics from the stock firmware:
@@ -162,23 +179,20 @@ void app_main(void)
         ESP_LOGW(TAG, "dv_rgb_start failed: %s (continuing without strip LEDs)",
                  esp_err_to_name(rgb_err));
     }
-    reflect_vent_on_rgb();
+    update_rgb_from_state();
     ESP_ERROR_CHECK(dv_button_start(on_button));
 
-    // Also mirror mode + vent-state changes made via the web portal / buttons.
+    // Mirror mode changes onto the button LED, and refresh the strip color from
+    // live state each tick (printing/temp change independently of the target;
+    // dv_rgb skips the RMT write when the resolved color is unchanged).
     dv_policy_mode_t last_mode = dv_policy_get_mode();
-    int last_target = -1;
     for (;;) {
         dv_policy_mode_t m = dv_policy_get_mode();
         if (m != last_mode) {
             reflect_mode_on_led();
             last_mode = m;
         }
-        int t = (int)dv_policy_get_target();
-        if (t != last_target) {
-            reflect_vent_on_rgb();
-            last_target = t;
-        }
+        update_rgb_from_state();
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 }

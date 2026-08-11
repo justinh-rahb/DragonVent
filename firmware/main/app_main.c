@@ -14,6 +14,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 
 static const char *TAG = "dragonvent";
 
@@ -101,6 +102,30 @@ static void on_button(dv_button_id_t id, dv_button_event_t ev)
     }
 }
 
+// Device-specific control-source selection after an OTA-over-stock. dc_wifi's
+// migrate (core) already carries all stock config across — WiFi, Moonraker, HA, and
+// the bound Bambu printer (bb_host/bb_serial/bb_code). Choosing which source to run
+// is device policy, not core's: the stock Panda Vent is a Bambu device, so on first
+// boot (no source persisted yet) adopt Bambu if a printer was carried. Guarded on the
+// ctl_src key being absent, so it fires exactly once and never overrides a later choice.
+static void select_migrated_source(void)
+{
+    nvs_handle_t h;
+    if (nvs_open("app_nvs", NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t src = 0;
+    bool already_chosen = (nvs_get_u8(h, "ctl_src", &src) == ESP_OK);
+    nvs_close(h);
+    if (already_chosen) return;
+
+    dc_bambu_config_t bb = {0};
+    dc_bambu_get_config(&bb);
+    if (bb.host[0]) {
+        dc_source_set(DC_SRC_BAMBU);   // persists ctl_src, so this runs only once
+        ESP_LOGW(TAG, "carried Bambu printer %s; control source -> Bambu", bb.host);
+        dc_evlog_add("migrated source -> Bambu");
+    }
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "DragonVent booting");
@@ -112,6 +137,7 @@ void app_main(void)
     ESP_ERROR_CHECK(dv_motor_init());
     ESP_ERROR_CHECK(configure_network_identity());
     ESP_ERROR_CHECK(dc_wifi_start());
+    select_migrated_source();   // device-specific: adopt a stock-bound Bambu printer
     ESP_ERROR_CHECK(start_control_source());
     ESP_ERROR_CHECK(dv_policy_start());
     ESP_ERROR_CHECK(dv_portal_start());

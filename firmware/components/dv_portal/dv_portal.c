@@ -360,6 +360,11 @@ static cJSON *lighting_json(void)
     cJSON_AddNumberToObject(root, "speed", c.speed);
     add_rgb(root, "error", c.error);
     cJSON_AddBoolToObject(root, "use_error", c.use_error);
+    cJSON_AddNumberToObject(root, "mode", c.mode);
+    add_rgb(root, "idle", c.idle);
+    add_rgb(root, "prep", c.prep);
+    add_rgb(root, "paused", c.paused);
+    add_rgb(root, "complete", c.complete);
     cJSON_AddNumberToObject(root, "strips", dv_rgb_strip_count());
     return root;
 }
@@ -403,10 +408,15 @@ static esp_err_t lighting_post(httpd_req_t *req)
         int v = e->valueint; c.speed = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
     }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "use_error")) && cJSON_IsBool(e)) c.use_error = cJSON_IsTrue(e);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "mode")) && cJSON_IsNumber(e)) c.mode = (uint8_t)(e->valueint & 1);
     patch_rgb(body, "open", c.open);
     patch_rgb(body, "closed", c.closed);
     patch_rgb(body, "printing", c.printing);
     patch_rgb(body, "error", c.error);
+    patch_rgb(body, "idle", c.idle);
+    patch_rgb(body, "prep", c.prep);
+    patch_rgb(body, "paused", c.paused);
+    patch_rgb(body, "complete", c.complete);
     cJSON_Delete(body);
 
     dv_rgb_set_config(&c);

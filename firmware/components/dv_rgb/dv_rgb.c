@@ -47,11 +47,18 @@ static dv_lighting_t s_cfg = {
     .temp_min_c = 25, .temp_max_c = 60,
     .effect = DV_FX_SOLID, .speed = 128,
     .error = {255, 0, 0}, .use_error = false,   // flashing red on a print error
+    // Printer-status mode (defaults mirror the stock Panda Vent palette).
+    .mode = DV_LIGHT_MODE_VENT,
+    .idle     = {255, 255, 255},   // white
+    .prep     = {248, 163,  35},   // orange (stock F8A323)
+    .paused   = {255, 255, 255},   // white
+    .complete = {  0, 255,  42},   // green (stock 00FF2A)
 };
 
 // Latest state fed to the policy, the animation phase/frame counter, and the
 // last solid color pushed (so a steady color skips redundant RMT refreshes).
 static int      s_target   = DV_MOTOR_TARGET_CLOSED;
+static int      s_pstatus  = DV_PS_NONE;
 static bool     s_printing = false;
 static bool     s_error    = false;
 static float    s_bed      = NAN;
@@ -106,12 +113,28 @@ static void fill_locked(const uint8_t rgb[3])
     }
 }
 
-// Resolve the state-based base color (open/closed/printing/temp), no brightness.
+// Map the printer status to its configured color (PRINTER mode).
+static const uint8_t *printer_status_color(void)
+{
+    switch (s_pstatus) {
+    case DV_PS_PREPARING: return s_cfg.prep;
+    case DV_PS_PRINTING:  return s_cfg.printing;
+    case DV_PS_PAUSED:    return s_cfg.paused;
+    case DV_PS_COMPLETE:  return s_cfg.complete;
+    case DV_PS_ERROR:     return s_cfg.error;
+    default:              return s_cfg.idle;   // IDLE / NONE
+    }
+}
+
+// Resolve the state base color (no brightness). PRINTER mode follows the printer
+// status; VENT mode follows the vent (open/closed, printing override, temp).
 static void compute_base(uint8_t out[3])
 {
     const uint8_t *base;
     uint8_t grad[3];
-    if (s_cfg.use_printing && s_printing) {
+    if (s_cfg.mode == DV_LIGHT_MODE_PRINTER) {
+        base = printer_status_color();
+    } else if (s_cfg.use_printing && s_printing) {
         base = s_cfg.printing;
     } else if (s_cfg.use_temp && !isnan(s_bed)) {
         int lo = s_cfg.temp_min_c, hi = s_cfg.temp_max_c;
@@ -209,13 +232,14 @@ static void anim_task(void *arg)
     }
 }
 
-void dv_rgb_update(int target, bool printing, bool error, float bed_temp_c)
+void dv_rgb_update(int target, int status, float bed_temp_c)
 {
     if (s_lock == NULL) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_target = target;
-    s_printing = printing;
-    s_error = error;
+    s_pstatus = status;
+    s_printing = (status == DV_PS_PRINTING);   // vent-mode printing override
+    s_error = (status == DV_PS_ERROR);         // error-flash override (both modes)
     s_bed = bed_temp_c;
     xSemaphoreGive(s_lock);
     // The animation task renders on the next frame.

@@ -112,6 +112,13 @@ static group_state_t    s_groups[DV_MOTOR_GROUP_COUNT];
 static SemaphoreHandle_t s_lock = NULL;
 static TaskHandle_t     s_task = NULL;
 
+// Recalibration sweep — driven from the motor task. While s_calibrating is set,
+// tick_group drives toward s_cal_target instead of the API/policy target, so the
+// commanded state is preserved and resumed once the sweep finishes.
+static volatile bool     s_calibrating = false;
+static dv_motor_target_t s_cal_target  = DV_MOTOR_TARGET_OPEN;
+static int               s_cal_phase   = 0;   // 0 = seeking OPEN, 1 = seeking CLOSED
+
 // Config-detect state — only touched from the motor task.
 static int s_detect_last_band  = -1;
 static int s_detect_streak     = 0;
@@ -413,10 +420,16 @@ static void tick_group(int g)
 {
     group_state_t *st = &s_groups[g];
 
-    // Snapshot the API-visible target under lock.
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    dv_motor_target_t want = st->target;
-    xSemaphoreGive(s_lock);
+    // During a recalibration sweep the sequencer drives the target (open, then
+    // closed) so the API/policy target is left untouched and resumes afterward.
+    dv_motor_target_t want;
+    if (s_calibrating) {
+        want = s_cal_target;
+    } else {
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        want = st->target;
+        xSemaphoreGive(s_lock);
+    }
 
     dv_motor_hall_t hall = read_hall(g);
     st->hall_cached = hall;
@@ -511,14 +524,43 @@ static void tick_group(int g)
     }
 }
 
+// Advance the recalibration sweep. A group counts as done for a phase once it
+// has arrived (learned that endstop) or given up, so one stuck group can't wedge
+// the sweep. Phase 0 seeks OPEN, phase 1 seeks CLOSED, then it's finished.
+static void cal_sequencer(void)
+{
+    for (int g = 0; g < s_active_groups; ++g) {
+        if (!s_groups[g].arrived && !s_groups[g].gave_up) return;   // still sweeping
+    }
+    if (s_cal_phase == 0) {
+        s_cal_phase  = 1;
+        s_cal_target = DV_MOTOR_TARGET_CLOSED;
+        for (int g = 0; g < s_active_groups; ++g) {
+            s_groups[g].arrived = false;
+            s_groups[g].gave_up = false;
+        }
+        ESP_LOGI(TAG, "recal: OPEN done, sweeping CLOSED");
+    } else {
+        s_calibrating = false;
+        for (int g = 0; g < s_active_groups; ++g) {
+            ESP_LOGI(TAG, "recal grp=%d: open=%d closed=%d mV",
+                     g, s_cal[g].open_mv, s_cal[g].closed_mv);
+        }
+        ESP_LOGI(TAG, "recalibration complete");
+    }
+}
+
 static void motor_task(void *arg)
 {
     (void)arg;
     for (;;) {
         for (int g = 0; g < s_active_groups; ++g) tick_group(g);
 
-        // Sample the hardware-config ADC on a slower cadence.
-        if (--s_detect_countdown <= 0) {
+        if (s_calibrating) {
+            cal_sequencer();
+        } else if (--s_detect_countdown <= 0) {
+            // Sample the hardware-config ADC on a slower cadence — but not during
+            // a sweep, so the group count can't change mid-calibration.
             s_detect_countdown = DETECT_INTERVAL_TICKS;
             tick_hwconfig();
         }
@@ -660,3 +702,43 @@ bool dv_motor_is_running(int group)
 }
 
 int dv_motor_active_groups(void) { return s_active_groups; }
+
+esp_err_t dv_motor_recalibrate(void)
+{
+    if (s_task == NULL) return ESP_ERR_INVALID_STATE;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_active_groups <= 0) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    // Forget the stored calibration so a mid-sweep reboot doesn't restore stale
+    // levels, then reset each group so the sweep re-learns from scratch.
+    for (int g = 0; g < DV_MOTOR_GROUP_COUNT; ++g) {
+        s_cal[g].open_mv   = -1;
+        s_cal[g].closed_mv = -1;
+    }
+    cal_save();
+    for (int g = 0; g < s_active_groups; ++g) {
+        s_groups[g].arrived = false;
+        s_groups[g].gave_up = false;
+    }
+    s_cal_phase   = 0;
+    s_cal_target  = DV_MOTOR_TARGET_OPEN;
+    s_calibrating = true;
+    xSemaphoreGive(s_lock);
+    ESP_LOGI(TAG, "recalibration started: sweeping OPEN then CLOSED");
+    return ESP_OK;
+}
+
+bool dv_motor_is_calibrating(void) { return s_calibrating; }
+
+void dv_motor_calibration(int group, int *open_mv, int *closed_mv)
+{
+    int o = -1, c = -1;
+    if (group >= 0 && group < DV_MOTOR_GROUP_COUNT) {
+        o = s_cal[group].open_mv;
+        c = s_cal[group].closed_mv;
+    }
+    if (open_mv)   *open_mv   = o;
+    if (closed_mv) *closed_mv = c;
+}

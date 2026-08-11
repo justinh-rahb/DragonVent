@@ -181,6 +181,16 @@ static cJSON *make_state(void)
     cJSON_AddStringToObject(vent, "target", target_wire(dv_policy_get_target()));
     cJSON_AddBoolToObject(vent, "running", running);
     cJSON_AddNumberToObject(vent, "active_groups", groups);
+    cJSON_AddBoolToObject(vent, "calibrating", dv_motor_is_calibrating());
+    cJSON *cal = cJSON_AddArrayToObject(vent, "calibration");
+    for (int i = 0; i < groups; ++i) {
+        int o = -1, c = -1;
+        dv_motor_calibration(i, &o, &c);
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddNumberToObject(e, "open_mv", o);
+        cJSON_AddNumberToObject(e, "closed_mv", c);
+        cJSON_AddItemToArray(cal, e);
+    }
 
     dc_ctl_source_t source = dc_source_get();
     cJSON *printer = cJSON_AddObjectToObject(root, "printer");
@@ -240,7 +250,7 @@ static esp_err_t info_get(httpd_req_t *req)
     cJSON_AddStringToObject(root, "project", "dragonvent");
     add_device_id(root);
     cJSON *caps = cJSON_AddArrayToObject(root, "capabilities");
-    const char *values[] = { "vent_manual", "vent_auto", "source_status", "polling", "provisioning" };
+    const char *values[] = { "vent_manual", "vent_auto", "vent_calibrate", "source_status", "polling", "provisioning" };
     for (size_t i = 0; i < sizeof(values) / sizeof(values[0]); ++i)
         cJSON_AddItemToArray(caps, cJSON_CreateString(values[i]));
     cJSON *ui = cJSON_AddObjectToObject(root, "ui");
@@ -280,6 +290,8 @@ static esp_err_t command_post(httpd_req_t *req)
         dv_motor_target_t value = !strcmp(target->valuestring, "open") ? DV_MOTOR_TARGET_OPEN : DV_MOTOR_TARGET_CLOSED;
         err = dv_policy_set_mode(DV_POLICY_MODE_MANUAL);
         if (err == ESP_OK) err = dv_policy_set_manual_target(value);
+    } else if (!strcmp(name->valuestring, "calibrate")) {
+        err = dv_motor_recalibrate();   // sweeps open→closed, re-learns endstops
     } else {
         cJSON_Delete(body); return api_error(req, "400 Bad Request", "unknown command");
     }

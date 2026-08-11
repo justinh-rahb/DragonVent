@@ -49,3 +49,17 @@ bool dv_motor_is_running(int group);
 // Currently active group count (0/2/4), as most recently determined by the
 // hardware-config detect ADC.
 int dv_motor_active_groups(void);
+
+// Discard the learned hall calibration and re-learn it by sweeping every active
+// group fully OPEN then fully CLOSED, recording each unit's settled endstop
+// levels. Non-blocking: the sweep runs on the motor task; poll
+// dv_motor_is_calibrating() for completion. Returns ESP_ERR_INVALID_STATE if the
+// driver isn't running or no groups are connected.
+esp_err_t dv_motor_recalibrate(void);
+
+// True while a recalibration sweep is in progress.
+bool dv_motor_is_calibrating(void);
+
+// Learned endstop levels for one group, in calibrated mV; each is -1 when not
+// yet learned. Either out pointer may be NULL.
+void dv_motor_calibration(int group, int *open_mv, int *closed_mv);

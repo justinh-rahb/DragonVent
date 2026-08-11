@@ -1,8 +1,10 @@
-# OTA-capable 4MB layout. Two app slots + NVS for config + phy_init.
-# Name,     Type, SubType,  Offset,   Size,    Flags
-nvs,        data, nvs,      0x9000,   0x6000,
-otadata,    data, ota,      0xf000,   0x2000,
-phy_init,   data, phy,      0x11000,  0x1000,
-ota_0,      app,  ota_0,    0x20000,  0x1D0000,
-ota_1,      app,  ota_1,    0x1F0000, 0x1D0000,
-nvs_cfg,    data, nvs,      0x3C0000, 0x40000,
+# DragonVent runs on the STOCK Panda Vent partition table so it can be installed
+# by OTA over stock firmware (the stock bootloader + this table are preserved;
+# only the app slot is written). Matches BTT panda_vent v1.0.0:
+#   nvs 12K @0x9000 · otadata @0xc000 · ota_0/ota_1 1984K each · coredump.
+# Name,     Type, SubType,  Offset,    Size,     Flags
+nvs,        data, nvs,      0x9000,    0x3000,
+otadata,    data, ota,      0xc000,    0x2000,
+ota_0,      app,  ota_0,    0x10000,   0x1F0000,
+ota_1,      app,  ota_1,    0x200000,  0x1F0000,
+coredump,   data, coredump, 0x3f0000,  0x1000,

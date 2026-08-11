@@ -42,8 +42,8 @@ jobs:
             --flash_mode dio --flash_size 4MB --flash_freq 40m
             0x1000 build/bootloader/bootloader.bin
             0x8000 build/partition_table/partition-table.bin
-            0xf000 build/ota_data_initial.bin
-            0x20000 build/dragonvent.bin
+            0xc000 build/ota_data_initial.bin
+            0x10000 build/dragonvent.bin
 
       - name: Stage release
         env:
@@ -70,61 +70,62 @@ jobs:
           set -euo pipefail
 
           cat > release_notes.md <<NOTES
-          ## Which file do I need?
+          ## Install over stock — no USB cable needed
 
-          - **\`dragonvent-${RELEASE_TAG}-factory.bin\`** — first-time flash of a fresh module. Contains bootloader + partition table + OTA data + app, flashed with \`esptool\` over USB.
-          - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — updating a device that's already running this firmware. Upload from **Device setup → Maintenance** in the shared web UI.
+          As of v0.5.0, DragonVent runs on the **stock Panda Vent partition table**, so you can install it **directly over the stock BTT firmware from a browser** — no serial cable, no disassembly. The stock bootloader is preserved; only the app slot is written.
 
-          Prefer using the [\`dragonvent\` helper](https://github.com/justinh-rahb/DragonVent/blob/main/scripts/dragonvent) — it fetches the right file, verifies the SHA, and drives esptool for you:
+          - **\`dragonvent-${RELEASE_TAG}-ota.bin\`** — the app image. Use this for the over-stock install **and** for updating an existing DragonVent.
+          - **\`dragonvent-${RELEASE_TAG}-factory.bin\`** — full image (bootloader + table + app) for USB recovery only.
+
+          ### Install over stock (recommended)
+
+          1. Put the **stock** Panda Vent on your network (its web UI is at \`http://PandaVent.local/\` or its IP).
+          2. Install with the helper — it fetches the file, verifies the SHA, and uploads it:
+             \`\`\`
+             scripts/dragonvent install -t ${RELEASE_TAG} -H PandaVent.local
+             \`\`\`
+             …or upload \`dragonvent-${RELEASE_TAG}-ota.bin\` yourself from the stock firmware-update page.
+          3. The stock firmware writes DragonVent to its inactive slot and reboots into it. First boot comes up as the **\`DragonVent_XXXX\`** setup AP (WPA2, password \`987654321\`) — join it to enter WiFi + printer settings. It's then on mDNS as **\`DragonVent.local\`**.
+
+          ### ⚠ Upgrading from 0.4.x (one-time roll-back)
+
+          0.4.x used a **different partition table**, so you can't OTA straight from 0.4.x to 0.5.0. Roll back to stock first, then install over stock — exactly like the DragonBreath 1.0 migration:
 
           \`\`\`
-          scripts/dragonvent install -t ${RELEASE_TAG}
+          scripts/dragonvent restore stock-panda-vent-backup.bin      # your stock backup
+          scripts/dragonvent install -t ${RELEASE_TAG} -H PandaVent.local
           \`\`\`
 
-          ## ⚠ Back up your stock firmware first (only for first-time flashing)
+          0.5.0 and later update **in place** (inactive-slot OTA) — no roll-back needed again.
 
-          This replaces the stock BTT firmware. There is currently **no signed image to roll back to** — BTT doesn't publish source or release binaries for the Panda Vent. Dump the whole flash before you write over it:
+          ### ⚠ Back up stock first
+
+          BTT publishes no stock image, so dump the flash over USB **before** your first install — it's your only way back:
 
           \`\`\`
           scripts/dragonvent backup                                             # or:
           python -m esptool --chip esp32 -p PORT -b 460800 read_flash 0x0 0x400000 stock-panda-vent-backup.bin
           \`\`\`
 
-          Keep that file somewhere safe. To go back to stock:
+          ### Updating an existing DragonVent
+
+          Upload \`dragonvent-${RELEASE_TAG}-ota.bin\` from **Device setup → Maintenance** in the web UI (or \`scripts/dragonvent install\`). It writes the inactive slot and reboots.
+
+          ### USB recovery (fallback)
+
+          If the device won't boot, flash the full image over serial:
 
           \`\`\`
-          scripts/dragonvent restore stock-panda-vent-backup.bin
-          \`\`\`
-
-          ## First-time flash (esptool)
-
-          If you'd rather not use the helper:
-
-          \`\`\`
-          python -m pip install esptool
           python -m esptool --chip esp32 -p PORT -b 460800 write_flash 0x0 dragonvent-${RELEASE_TAG}-factory.bin
           \`\`\`
 
-          Replace \`PORT\` with your serial device (\`/dev/tty.usbserial-0001\` on macOS, \`/dev/ttyUSB0\` on Linux, \`COM3\` on Windows). Most USB devkits enter download mode automatically; bare modules need **BOOT** held while you pulse **EN/RST**.
+          \`PORT\` = \`/dev/ttyUSB0\` (Linux), \`/dev/tty.usbserial-*\` (macOS), \`COM3\` (Windows).
 
-          ## OTA update (from the web UI)
+          ### Verify download
 
-          If your device is already running DragonVent, you can update from a browser without touching USB:
-
-          1. Load the DragonVent UI (\`http://DragonVent.local/\` or the AP IP).
-          2. Open **Settings → Device setup**, then find **Maintenance**.
-          3. Choose \`dragonvent-${RELEASE_TAG}-ota.bin\` and select **Upload firmware**.
-          4. The device writes to the inactive OTA slot, swaps the boot pointer, and reboots into the new version.
-
-          ## First boot after full-flash
-
-          The device comes up as **`DragonVent_XXXX`** (WPA2 hotspot, password `987654321`). Join it; the same DragonVent SPA opens in captive setup mode so you can enter home WiFi and printer-source settings. It advertises on mDNS as **`DragonVent.local`** once it joins your LAN.
-
-          ## Verify download
-
-          ```
+          \`\`\`
           shasum -a 256 -c SHA256SUMS
-          ```
+          \`\`\`
           NOTES
 
           # A semver pre-release tag carries a hyphenated suffix (v0.4.0-rc1,

@@ -4,22 +4,21 @@
 #            on a Bigtreetech Panda Vent (or any classic ESP32).
 #
 # Usage:
-#   dragonvent backup  [-p PORT] [-o FILE]
-#   dragonvent restore [-p PORT] FILE
-#   dragonvent install [-p PORT] [TAG | FILE.bin]
+#   dragonvent backup  [-p PORT] [-o FILE]                  # USB dump of stock (your way back)
+#   dragonvent restore [-p PORT] FILE                       # USB flash a stock backup
+#   dragonvent install [-H HOST] [TAG | FILE.bin]           # OTA over stock (no USB) — DEFAULT
+#   dragonvent install --usb [-p PORT] [TAG | FILE.bin]     # USB full-flash (recovery)
 #   dragonvent help
 #
 # Examples:
 #   dragonvent backup                                       # → stock-panda-vent-backup-<ts>.bin
-#   dragonvent backup -o my-backup.bin
-#   dragonvent install                                      # latest release
-#   dragonvent install v0.2.6                               # specific tag (positional)
-#   dragonvent install -t v0.2.6                            # same, long form
-#   dragonvent install build/dragonvent-full.bin              # local file (positional)
+#   dragonvent install                                      # latest, OTA to PandaVent.local
+#   dragonvent install v0.5.0 -H 10.0.0.42                  # specific tag to an IP
+#   dragonvent install --usb v0.5.0                         # USB recovery flash
 #   dragonvent restore my-backup.bin
 #
-# Requires `esptool` (install with `pip install esptool`). GitHub download uses
-# `curl` if the `gh` CLI isn't installed.
+# install (OTA) needs `curl`; backup/restore/--usb need `esptool`
+# (`pip install esptool`). GitHub download uses `gh` if present, else `curl`.
 
 set -euo pipefail
 
@@ -109,58 +108,47 @@ cmd_restore() {
 # reasons; falls back to curl for anonymous fetch. DragonVent release names
 # are preferred; OpenVent fallbacks keep the helper useful for releases
 # published before the rebrand.
+# download_release TAG OUT [VARIANT]  — VARIANT is "ota" (default; the app image
+# for OTA-over-stock or a DragonVent in-place update) or "factory" (full image
+# for USB recovery). factory keeps the older full/openvent name fallbacks.
 download_release() {
-    local tag="$1" out="$2"
+    local tag="$1" out="$2" variant="${3:-ota}"
+    # Release assets are versioned (no "latest" in the name), so resolve the real
+    # tag first. gh can; without it, ask the user for a concrete tag.
+    if [ "$tag" = "latest" ]; then
+        command -v gh >/dev/null 2>&1 || die "pass a specific tag (e.g. v0.5.0) when the gh CLI isn't installed"
+        tag="$(gh release view --repo "$REPO" --json tagName -q .tagName 2>/dev/null)" \
+            || die "couldn't resolve the latest release"
+    fi
+    local primary="dragonvent-${tag}-${variant}.bin"
     if command -v gh >/dev/null 2>&1; then
-        # Current name first ("factory"), then the older "full" name, then the
-        # original bare names. The rename lets the shared SPA's update check pick
-        # the OTA asset unambiguously (it excludes assets containing "factory").
         gh release download "$tag" --repo "$REPO" \
-            --pattern "dragonvent-${tag}-factory.bin" --output "$out" --clobber 2>/dev/null && return 0
-        gh release download "$tag" --repo "$REPO" \
-            --pattern "dragonvent-${tag}-full.bin" --output "$out" --clobber 2>/dev/null && return 0
-        gh release download "$tag" --repo "$REPO" \
-            --pattern 'dragonvent-full.bin' --output "$out" --clobber 2>/dev/null && return 0
-        gh release download "$tag" --repo "$REPO" \
-            --pattern "openvent-${tag}-full.bin" --output "$out" --clobber 2>/dev/null && return 0
-        gh release download "$tag" --repo "$REPO" \
-            --pattern 'openvent-full.bin' --output "$out" --clobber
-    else
-        local base_factory="dragonvent-${tag}-factory.bin"
-        local base_new="dragonvent-${tag}-full.bin"
-        local base_old="dragonvent-full.bin"
-        local legacy_new="openvent-${tag}-full.bin"
-        local legacy_old="openvent-full.bin"
-        local candidates=(
-            "https://github.com/$REPO/releases/download/$tag/$base_factory"
-            "https://github.com/$REPO/releases/download/$tag/$base_new"
-            "https://github.com/$REPO/releases/download/$tag/$base_old"
-            "https://github.com/$REPO/releases/download/$tag/$legacy_new"
-            "https://github.com/$REPO/releases/download/$tag/$legacy_old"
-        )
-        if [ "$tag" = "latest" ]; then
-            candidates=(
-                "https://github.com/$REPO/releases/latest/download/$base_old"
-                "https://github.com/$REPO/releases/latest/download/$legacy_old"
-            )
+            --pattern "$primary" --output "$out" --clobber 2>/dev/null && return 0
+        if [ "$variant" = "factory" ]; then
+            for pat in "dragonvent-${tag}-full.bin" "dragonvent-full.bin" \
+                       "openvent-${tag}-full.bin" "openvent-full.bin"; do
+                gh release download "$tag" --repo "$REPO" \
+                    --pattern "$pat" --output "$out" --clobber 2>/dev/null && return 0
+            done
         fi
-        for url in "${candidates[@]}"; do
-            echo "→ trying $url"
-            if curl -fSL "$url" -o "$out" 2>/dev/null; then
-                return 0
-            fi
-        done
-        die "download failed — check the tag or network"
+        die "download failed — no $primary in release $tag"
+    else
+        local url="https://github.com/$REPO/releases/download/$tag/$primary"
+        echo "→ downloading $primary"
+        curl -fSL "$url" -o "$out" 2>/dev/null && return 0
+        die "download failed — check the tag/variant or network"
     fi
 }
 
 cmd_install() {
-    local port="" tag="" file=""
+    local port="" host="" tag="" file="" usb=""
     while [ $# -gt 0 ]; do
         case "$1" in
-            -p) port="$2"; shift 2 ;;
+            -p) port="$2"; usb=1; shift 2 ;;
+            -H) host="$2"; shift 2 ;;
             -t) tag="$2"; shift 2 ;;
             -f) file="$2"; shift 2 ;;
+            --usb) usb=1; shift ;;
             v[0-9]*|latest)
                 [ -z "$tag" ] || die "tag specified twice ($tag and $1)"
                 tag="$1"; shift ;;
@@ -170,28 +158,40 @@ cmd_install() {
             *)  die "unknown arg: $1" ;;
         esac
     done
-    [ -n "$port" ] || port="$(autodetect_port || die "no serial port found — pass -p /dev/tty.usbserial-XXXX")"
 
-    local image
-    if [ -n "$file" ]; then
-        [ -f "$file" ] || die "not a file: $file"
-        image="$file"
-        echo "→ installing local file $image on $port"
+    if [ -n "$usb" ]; then
+        # ---- USB recovery: full-flash the factory image over serial ----
+        require_esptool
+        [ -n "$port" ] || port="$(autodetect_port || die "no serial port found — pass -p /dev/ttyUSB0")"
+        local image
+        if [ -n "$file" ]; then [ -f "$file" ] || die "not a file: $file"; image="$file"
+        else [ -n "$tag" ] || tag="latest"; image="$(mktemp -t dragonvent-factory.XXXXXX.bin)"
+             trap 'rm -f "${image:-}"' EXIT; download_release "$tag" "$image" factory; fi
+        echo "→ USB full-flash ($image) on $port"
+        "${ESPTOOL[@]}" --chip "$CHIP" -p "$port" -b "$BAUD" write_flash 0x0 "$image"
+        echo "✓ install complete — rebooting into DragonVent."
     else
-        [ -n "$tag" ] || tag="latest"
-        image="$(mktemp -t dragonvent-full.XXXXXX.bin)"
-        # Guarded expansion so the EXIT trap doesn't trip `set -u` after a
-        # successful install has run its full path.
-        trap 'rm -f "${image:-}"' EXIT
-        download_release "$tag" "$image"
-        echo "→ installing release $tag on $port"
+        # ---- OTA over stock (default): upload the app to the device's /ota ----
+        # Works against a Panda Vent running stock BTT firmware (and matches its
+        # web-UI firmware upload). The stock bootloader + table are kept; only the
+        # app slot is written.
+        command -v curl >/dev/null 2>&1 || die "curl is required for OTA install (or use -p PORT for USB)"
+        [ -n "$host" ] || host="PandaVent.local"
+        local image
+        if [ -n "$file" ]; then [ -f "$file" ] || die "not a file: $file"; image="$file"
+        else [ -n "$tag" ] || tag="latest"; image="$(mktemp -t dragonvent-ota.XXXXXX.bin)"
+             trap 'rm -f "${image:-}"' EXIT; download_release "$tag" "$image" ota; fi
+        echo "→ OTA over stock: uploading $(basename "$image") to http://$host/ota"
+        local code
+        code="$(curl -s -m 180 -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Content-Type: application/octet-stream' -H 'OTA-Type: ota_fw' \
+            --data-binary @"$image" "http://$host/ota")" \
+            || die "upload failed — is the device reachable at http://$host/ ?"
+        [ "$code" = "200" ] || die "device returned HTTP $code (expected 200 — is $host on stock firmware?)"
+        echo "✓ uploaded — the device is rebooting into DragonVent."
     fi
-
-    "${ESPTOOL[@]}" --chip "$CHIP" -p "$port" -b "$BAUD" \
-        write_flash 0x0 "$image"
-    echo "✓ install complete — the device will reboot into DragonVent."
-    echo "  first-time users: join the 'DragonVent_XXXX' hotspot (password 987654321)"
-    echo "  and configure WiFi + Moonraker through the captive portal."
+    echo "  first boot comes up as the 'DragonVent_XXXX' hotspot (password 987654321);"
+    echo "  join it to set WiFi + printer source in the captive portal."
 }
 
 cmd_help() {
@@ -206,7 +206,7 @@ shift || true
 case "$sub" in
     backup)  require_esptool; cmd_backup  "$@" ;;
     restore) require_esptool; cmd_restore "$@" ;;
-    install) require_esptool; cmd_install "$@" ;;
+    install) cmd_install "$@" ;;
     help|-h|--help) cmd_help ;;
     *) die "unknown subcommand: $sub (try 'dragonvent help')" ;;
 esac

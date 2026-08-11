@@ -43,21 +43,28 @@ Deferred:
 
 Full pin map + provenance: [docs/HARDWARE_ANALYSIS.md](docs/HARDWARE_ANALYSIS.md).
 
-## ⚠ Back up your stock firmware first
+## Install — over stock, no USB (v0.5.0+)
 
-Before flashing DragonVent, **dump the whole flash** so you have a way back —
-BTT doesn't publish source or release binaries for the Panda Vent, so if you
-lose the stock image there's no official way to recover it. The included
-[`scripts/dragonvent`](scripts/dragonvent) helper wraps this up:
+As of **v0.5.0** DragonVent runs on the **stock Panda Vent partition table**, so
+you install it **over the stock firmware from a browser** — no serial cable. The
+stock bootloader is preserved; only the app slot is written. The included
+[`scripts/dragonvent`](scripts/dragonvent) helper wraps it up:
 
 ```
-scripts/dragonvent backup                 # → stock-panda-vent-backup.bin
-scripts/dragonvent install v0.2.0         # download + flash a release
-scripts/dragonvent restore stock-panda-vent-backup.bin   # roll back
+scripts/dragonvent backup                                # ⚠ USB dump of stock first (your only way back)
+scripts/dragonvent install v0.5.0 -H PandaVent.local     # OTA over stock (no USB)
+scripts/dragonvent restore stock-panda-vent-backup.bin   # roll back (USB)
 ```
 
-(All three take an optional `-p /dev/tty.usbserial-XXXX` if the default
-autodetect doesn't find the right port.)
+**⚠ Back up stock first** — BTT publishes no Panda Vent image, so dump the flash
+over USB *before* your first install; it's your only way back.
+
+**Upgrading from 0.4.x:** those builds used a different partition table, so you
+can't OTA straight across — `restore` to stock, then `install` over stock (same
+one-time roll-back as the DragonBreath 1.0 migration). 0.5.0+ update in place.
+
+USB recovery is still available: `scripts/dragonvent install --usb v0.5.0`
+(`-p /dev/ttyUSB0` if autodetect misses the port).
 
 ## Status
 

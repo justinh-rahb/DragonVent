@@ -1,4 +1,5 @@
 build/
+build_stock/
 sdkconfig
 sdkconfig.old
 managed_components/

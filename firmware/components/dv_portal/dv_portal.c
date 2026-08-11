@@ -365,6 +365,7 @@ static cJSON *lighting_json(void)
     add_rgb(root, "prep", c.prep);
     add_rgb(root, "paused", c.paused);
     add_rgb(root, "complete", c.complete);
+    cJSON_AddBoolToObject(root, "reverse", c.reverse);
     cJSON_AddNumberToObject(root, "strips", dv_rgb_strip_count());
     return root;
 }
@@ -403,7 +404,8 @@ static esp_err_t lighting_post(httpd_req_t *req)
     }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_min_c")) && cJSON_IsNumber(e)) c.temp_min_c = (uint8_t)e->valueint;
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_max_c")) && cJSON_IsNumber(e)) c.temp_max_c = (uint8_t)e->valueint;
-    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) c.effect = (uint8_t)(e->valueint & 3);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) { int v = e->valueint; c.effect = (uint8_t)(v < 0 ? 0 : v > 6 ? 6 : v); }
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "reverse")) && cJSON_IsBool(e)) c.reverse = cJSON_IsTrue(e);
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "speed")) && cJSON_IsNumber(e)) {
         int v = e->valueint; c.speed = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
     }

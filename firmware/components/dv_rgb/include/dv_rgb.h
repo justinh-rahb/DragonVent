@@ -26,6 +26,9 @@ typedef enum {
     DV_FX_CYCLE,       // whole strip cycles through the hue wheel together
     DV_FX_RAINBOW,     // rainbow spread across the strip, scrolling
     DV_FX_BREATHE,     // state color with a breathing brightness pulse
+    DV_FX_STROBE,      // state color flashing on/off
+    DV_FX_WAVE,        // brightness wave of the state color travelling the strip
+    DV_FX_MARQUEE,     // theatre-chase of the state color
 } dv_light_fx_t;
 
 // How the base color is chosen.
@@ -66,6 +69,7 @@ typedef struct {
     uint8_t prep[3];
     uint8_t paused[3];
     uint8_t complete[3];
+    bool    reverse;         // reverse LED order for spatial effects (rainbow/wave/marquee)
 } dv_lighting_t;
 
 // Detect the connected strips, load saved config, drive the initial color.

@@ -182,7 +182,8 @@ static void render_locked(void)
     case DV_FX_RAINBOW: {
         for (int i = 0; i < s_count; ++i) {
             for (int j = 0; j < LEDS_PER_STRIP; ++j) {
-                uint16_t hue = (uint16_t)(s_phase + (uint32_t)j * (65536 / LEDS_PER_STRIP));
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                uint16_t hue = (uint16_t)(s_phase + (uint32_t)p * (65536 / LEDS_PER_STRIP));
                 uint8_t rgb[3];
                 hsv2rgb(hue, 255, s_cfg.brightness, rgb);
                 led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
@@ -190,6 +191,52 @@ static void render_locked(void)
             led_strip_refresh(s_strips[i]);
         }
         s_last[0] = 0xAA;                      // invalidate solid dedup
+        break;
+    }
+    case DV_FX_STROBE: {
+        uint8_t base[3];
+        compute_base(base);
+        bool on = ((s_phase >> 12) & 1) == 0;   // flash rate scales with speed
+        uint8_t rgb[3] = {0, 0, 0};
+        if (on) for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
+        fill_locked(rgb);
+        s_last[0] = 0x33;
+        break;
+    }
+    case DV_FX_WAVE: {
+        uint8_t base[3];
+        compute_base(base);
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                uint16_t x = (uint16_t)((uint32_t)p * (65536 / LEDS_PER_STRIP) + s_phase);
+                uint8_t w = (x < 32768) ? (uint8_t)(x >> 7) : (uint8_t)(255 - ((x - 32768) >> 7));
+                uint16_t lvl = (uint16_t)s_cfg.brightness * w / 255;
+                uint8_t rgb[3];
+                for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * lvl / 255);
+                led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0x44;
+        break;
+    }
+    case DV_FX_MARQUEE: {
+        uint8_t base[3];
+        compute_base(base);
+        uint8_t on_rgb[3];
+        for (int k = 0; k < 3; ++k) on_rgb[k] = (uint8_t)((uint16_t)base[k] * s_cfg.brightness / 255);
+        int offset = (int)((s_phase >> 11) % 3);
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                bool lit = ((p + offset) % 3) == 0;   // every 3rd LED, scrolling
+                if (lit) led_strip_set_pixel(s_strips[i], j, on_rgb[0], on_rgb[1], on_rgb[2]);
+                else     led_strip_set_pixel(s_strips[i], j, 0, 0, 0);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0x66;
         break;
     }
     case DV_FX_BREATHE: {

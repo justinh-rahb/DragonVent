@@ -18,3 +18,11 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # "Header fields are too long for server to interpret".
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=2048
 CONFIG_HTTPD_MAX_URI_LEN=1024
+
+# The default LWIP pool (10 sockets) is shared by the single-worker httpd, the
+# Moonraker WebSocket, mDNS, and Bambu SSDP discovery. A browser opening the SPA
+# fires ~6 concurrent requests (page + polls); at 10 sockets those get refused
+# once the background consumers are counted, so the UI intermittently fails to
+# load. 16 gives httpd real concurrency headroom (esp_http_server sizes its open
+# sockets from this too).
+CONFIG_LWIP_MAX_SOCKETS=16

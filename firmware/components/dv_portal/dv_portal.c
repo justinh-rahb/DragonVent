@@ -372,6 +372,38 @@ static cJSON *lighting_json(void)
 
 static esp_err_t lighting_get(httpd_req_t *req) { return send_json(req, lighting_json()); }
 
+// POST /api/v2/bambu/scan — start a one-shot LAN scan (user-initiated only). The
+// UI calls this when the operator opens/clicks Bambu setup, then polls the GET.
+static esp_err_t bambu_scan_post(httpd_req_t *req)
+{
+    dc_bambu_scan_start();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "scanning", dc_bambu_scanning());
+    return send_json(req, root);
+}
+
+// GET /api/v2/bambu/discovered — printers found by the most recent scan, freshest
+// first, plus whether a scan is still running. The setup UI polls this to fill in
+// host + serial so the user only has to enter the LAN access code.
+static esp_err_t bambu_discovered_get(httpd_req_t *req)
+{
+    dc_bambu_found_t found[DC_BAMBU_DISCOVER_MAX];
+    int n = dc_bambu_discover_get(found, DC_BAMBU_DISCOVER_MAX);
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "scanning", dc_bambu_scanning());
+    cJSON *arr = cJSON_AddArrayToObject(root, "printers");
+    for (int i = 0; i < n; ++i) {
+        cJSON *p = cJSON_CreateObject();
+        cJSON_AddStringToObject(p, "host", found[i].host);
+        cJSON_AddStringToObject(p, "serial", found[i].serial);
+        cJSON_AddStringToObject(p, "model", found[i].model);
+        cJSON_AddStringToObject(p, "name", found[i].name);
+        cJSON_AddNumberToObject(p, "age_s", found[i].age_s);
+        cJSON_AddItemToArray(arr, p);
+    }
+    return send_json(req, root);
+}
+
 // Parse an [r,g,b] array (0-255) into out, only if present + valid.
 static void patch_rgb(cJSON *body, const char *key, uint8_t out[3])
 {
@@ -540,6 +572,18 @@ static cJSON *describe_product(void *ctx)
     field(fields, "bambu_host", "Bambu host", "text", bb.host);
     field(fields, "bambu_serial", "Bambu serial", "text", bb.serial);
     cJSON_AddBoolToObject(field(fields, "bambu_code", "Bambu access code", "text", ""), "secret", true);
+    // LAN discovery: the shared SPA renders a "scan" button + picker from this
+    // block. It GETs `endpoint`, reads the `list` array, shows name/host/model,
+    // and on pick copies each discovered property into the mapped setup field.
+    // So the user only types the access code.
+    cJSON *disc = cJSON_AddObjectToObject(bambu, "discovery");
+    cJSON_AddStringToObject(disc, "scan", "/api/v2/bambu/scan");         // POST: start a scan
+    cJSON_AddStringToObject(disc, "endpoint", "/api/v2/bambu/discovered"); // GET: poll results
+    cJSON_AddStringToObject(disc, "list", "printers");
+    cJSON_AddStringToObject(disc, "label", "Search for printers on the network");
+    cJSON *fill = cJSON_AddObjectToObject(disc, "fill");   // discovered key -> field key
+    cJSON_AddStringToObject(fill, "host", "bambu_host");
+    cJSON_AddStringToObject(fill, "serial", "bambu_serial");
     cJSON_AddItemToArray(sections, bambu);
 
     // Control token. Never echoed back — the field is always blank and only its
@@ -670,6 +714,8 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/lighting", .method = HTTP_POST, .handler = lighting_post },
         { .uri = "/api/v2/filament", .method = HTTP_GET, .handler = filament_get },
         { .uri = "/api/v2/filament", .method = HTTP_POST, .handler = filament_post },
+        { .uri = "/api/v2/bambu/discovered", .method = HTTP_GET, .handler = bambu_discovered_get },
+        { .uri = "/api/v2/bambu/scan", .method = HTTP_POST, .handler = bambu_scan_post },
     };
     const dc_portal_config_t config = {
         .product = "dragonvent", .display_name = "DragonVent",

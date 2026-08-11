@@ -27,3 +27,4 @@ dependencies:
     git: https://github.com/justinh-rahb/dragon-core.git
     path: components/dc_portal
     version: v0.8.0
+  espressif/led_strip: "^2.5.3"

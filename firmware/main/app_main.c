@@ -8,6 +8,7 @@
 #include "dv_policy.h"
 #include "dv_portal.h"
 #include "dv_status_led.h"
+#include "dv_rgb.h"
 #include "dc_wifi.h"
 
 #include "esp_log.h"
@@ -65,6 +66,17 @@ static void reflect_mode_on_led(void)
     dv_status_led_set(dv_policy_get_mode() == DV_POLICY_MODE_AUTO
                           ? DV_STATUS_LED_OFF
                           : DV_STATUS_LED_BLINK);
+}
+
+// Vent strip color follows the vent: open = airflow = cool = blue,
+// closed = sealed = hot = red. (These defaults will become user-configurable.)
+static void reflect_vent_on_rgb(void)
+{
+    switch (dv_policy_get_target()) {
+    case DV_MOTOR_TARGET_OPEN:   dv_rgb_set(0, 0, 255); break;   // blue
+    case DV_MOTOR_TARGET_CLOSED: dv_rgb_set(255, 0, 0); break;   // red
+    default: break;                                             // stop: leave as-is
+    }
 }
 
 // Button semantics from the stock firmware:
@@ -143,15 +155,29 @@ void app_main(void)
     ESP_ERROR_CHECK(dv_portal_start());
     ESP_ERROR_CHECK(dv_status_led_start());
     reflect_mode_on_led();
+    // WS2812 strips: init after the motor (ADC+LEDC) so RMT comes up last, per
+    // stock ordering. Non-fatal — a strip failure must not take down the vent.
+    esp_err_t rgb_err = dv_rgb_start();
+    if (rgb_err != ESP_OK) {
+        ESP_LOGW(TAG, "dv_rgb_start failed: %s (continuing without strip LEDs)",
+                 esp_err_to_name(rgb_err));
+    }
+    reflect_vent_on_rgb();
     ESP_ERROR_CHECK(dv_button_start(on_button));
 
-    // Also mirror mode changes made via the web portal.
+    // Also mirror mode + vent-state changes made via the web portal / buttons.
     dv_policy_mode_t last_mode = dv_policy_get_mode();
+    int last_target = -1;
     for (;;) {
         dv_policy_mode_t m = dv_policy_get_mode();
         if (m != last_mode) {
             reflect_mode_on_led();
             last_mode = m;
+        }
+        int t = (int)dv_policy_get_target();
+        if (t != last_target) {
+            reflect_vent_on_rgb();
+            last_target = t;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
     }

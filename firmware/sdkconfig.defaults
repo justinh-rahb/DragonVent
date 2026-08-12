@@ -26,3 +26,13 @@ CONFIG_HTTPD_MAX_URI_LEN=1024
 # load. 16 gives httpd real concurrency headroom (esp_http_server sizes its open
 # sockets from this too).
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# Bambu Lab LAN MQTT presents a per-device SELF-SIGNED cert (CN=serial) reached by
+# IP, so there is no CA to verify against — a read-only LAN client must connect
+# without server-cert verification. Without this, esp-tls fails SSL setup outright
+# ("No server verification option set in esp_tls_cfg_t") and the Bambu client can
+# never connect, regardless of host/serial/access code. dc_bambu documents the
+# dependency at its esp_mqtt_client_config_t. Only affects TLS connections that
+# provide NO CA (i.e. Bambu); any TLS peer we DO give a CA is still verified.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y

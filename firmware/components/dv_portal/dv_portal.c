@@ -436,7 +436,7 @@ static esp_err_t lighting_post(httpd_req_t *req)
     }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_min_c")) && cJSON_IsNumber(e)) c.temp_min_c = (uint8_t)e->valueint;
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_max_c")) && cJSON_IsNumber(e)) c.temp_max_c = (uint8_t)e->valueint;
-    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) { int v = e->valueint; c.effect = (uint8_t)(v < 0 ? 0 : v > 6 ? 6 : v); }
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) { int v = e->valueint; c.effect = (uint8_t)(v < 0 ? 0 : v > DV_FX_CYLON ? DV_FX_CYLON : v); }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "reverse")) && cJSON_IsBool(e)) c.reverse = cJSON_IsTrue(e);
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "speed")) && cJSON_IsNumber(e)) {
         int v = e->valueint; c.speed = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);

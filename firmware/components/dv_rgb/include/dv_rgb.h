@@ -29,6 +29,7 @@ typedef enum {
     DV_FX_STROBE,      // state color flashing on/off
     DV_FX_WAVE,        // brightness wave of the state color travelling the strip
     DV_FX_MARQUEE,     // theatre-chase of the state color
+    DV_FX_CYLON,       // bouncing scanner using the resolved state color
 } dv_light_fx_t;
 
 // How the base color is chosen.

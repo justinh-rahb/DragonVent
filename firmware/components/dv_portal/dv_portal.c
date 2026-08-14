@@ -365,7 +365,8 @@ static cJSON *lighting_json(void)
     add_rgb(root, "prep", c.prep);
     add_rgb(root, "paused", c.paused);
     add_rgb(root, "complete", c.complete);
-    cJSON_AddBoolToObject(root, "reverse", c.reverse);
+    cJSON *rs = cJSON_AddArrayToObject(root, "rev_strip");
+    if (rs) { cJSON_AddItemToArray(rs, cJSON_CreateBool(c.rev_strip[0])); cJSON_AddItemToArray(rs, cJSON_CreateBool(c.rev_strip[1])); }
     cJSON_AddNumberToObject(root, "strips", dv_rgb_strip_count());
     return root;
 }
@@ -436,8 +437,18 @@ static esp_err_t lighting_post(httpd_req_t *req)
     }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_min_c")) && cJSON_IsNumber(e)) c.temp_min_c = (uint8_t)e->valueint;
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "temp_max_c")) && cJSON_IsNumber(e)) c.temp_max_c = (uint8_t)e->valueint;
-    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) { int v = e->valueint; c.effect = (uint8_t)(v < 0 ? 0 : v > 6 ? 6 : v); }
-    if ((e = cJSON_GetObjectItemCaseSensitive(body, "reverse")) && cJSON_IsBool(e)) c.reverse = cJSON_IsTrue(e);
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "effect")) && cJSON_IsNumber(e)) { int v = e->valueint; c.effect = (uint8_t)(v < 0 ? 0 : v > 7 ? 7 : v); }
+    // Legacy global reverse -> apply to both strips (and drop the legacy flag).
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "reverse")) && cJSON_IsBool(e)) { bool r = cJSON_IsTrue(e); c.reverse = false; c.rev_strip[0] = c.rev_strip[1] = r; }
+    // Per-strip reverse: array of bools, one per strip (authoritative).
+    if ((e = cJSON_GetObjectItemCaseSensitive(body, "rev_strip")) && cJSON_IsArray(e)) {
+        int n = cJSON_GetArraySize(e);
+        c.reverse = false;   // per-strip supersedes any legacy global flag
+        for (int i = 0; i < 2 && i < n; ++i) {
+            cJSON *it = cJSON_GetArrayItem(e, i);
+            if (it) c.rev_strip[i] = (uint8_t)(cJSON_IsTrue(it) || (cJSON_IsNumber(it) && it->valueint != 0));
+        }
+    }
     if ((e = cJSON_GetObjectItemCaseSensitive(body, "speed")) && cJSON_IsNumber(e)) {
         int v = e->valueint; c.speed = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
     }

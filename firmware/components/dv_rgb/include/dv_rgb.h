@@ -29,6 +29,7 @@ typedef enum {
     DV_FX_STROBE,      // state color flashing on/off
     DV_FX_WAVE,        // brightness wave of the state color travelling the strip
     DV_FX_MARQUEE,     // theatre-chase of the state color
+    DV_FX_CYLON,       // bouncing "eye" (Larson scanner) of the state color
 } dv_light_fx_t;
 
 // How the base color is chosen.
@@ -69,7 +70,11 @@ typedef struct {
     uint8_t prep[3];
     uint8_t paused[3];
     uint8_t complete[3];
-    bool    reverse;         // reverse LED order for spatial effects (rainbow/wave/marquee)
+    bool    reverse;         // legacy global reverse; migrated into rev_strip[] on load
+    uint8_t rev_strip[2];    // per-strip full reverse (0/1): flip a strip's whole
+                             // direction. Use when a strip is fed from the far
+                             // connector so it runs opposite the other (e.g. lights
+                             // "circle" the printer). Indexed by s_strips[] order.
 } dv_lighting_t;
 
 // Detect the connected strips, load saved config, drive the initial color.

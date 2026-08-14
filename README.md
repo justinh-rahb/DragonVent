@@ -6,9 +6,21 @@ Open firmware for the [BIGTREETECH Panda Vent](https://github.com/bigtreetech/Pa
 
 The Panda Vent is a smart vent riser for enclosed 3D printers. DragonVent replaces its stock firmware and currently integrates with Klipper printers through Moonraker while preserving the proven OpenVent motor, hall-sensor, button, and vent-policy implementation.
 
+## Screenshots
+
+<p>
+<img src="docs/screenshots/dashboard.png" width="410" alt="DragonVent dashboard — live vent state, printer/controller status, open/close/auto controls">
+<img src="docs/screenshots/lighting.png" width="410" alt="Lighting page — effects, printer-status colors, and per-strip reverse toggles">
+</p>
+
+The device serves a responsive web UI over your LAN (also embeddable in the
+Fluidd / Mainsail panel): live vent controls with the automatic printer-following
+policy, and a **Lighting** page for the WS2812 status strips — effects, colors, and
+per-strip direction.
+
 ## Features
 
-Working today (OpenVent v0.3.3 baseline plus the in-development DragonVent refactor):
+Working today:
 
 - **Automatic vent control** — six-state printer model (idle / preparing / printing / paused / complete / error), material-aware policy (PLA opens for cooling, ABS/ASA seals for heat retention), bed-temp hysteresis for residual heat
 - **Stock-parity hall sensing** — per-boot ADC line-fitting calibration with calibrated-millivolt thresholds, matching stock's reproduction contract
@@ -21,10 +33,7 @@ Working today (OpenVent v0.3.3 baseline plus the in-development DragonVent refac
 - **Physical button control** — auto/manual mode toggle, manual vent override, manual target persists across reboots
 - **Schema-driven setup** — product-specific source and vent-policy fields are rendered by the common SPA instead of a second firmware page
 - **OTA firmware updates** — flash new firmware from the web UI
-
-Deferred:
-
-- **RGB LED status** — WS2812 driver + effects engine, planned for the 0.4.x series
+- **RGB status lighting** — WS2812 strips with effects (solid, cycle, rainbow, breathe, strobe, wave, marquee, Cylon), printer-status colors, a temperature gradient, an error flash, and **per-strip reverse** for 2-strip kits (run both strips the same direction or opposite, so effects can "circle" the printer)
 
 ## Documentation
 
@@ -36,7 +45,7 @@ Deferred:
 - **Kit contents**: 1 mainboard + several motorized vent modules + LED boards. Each vent module has one motor, one hall sensor, and identical 3-pin JST connectors on both ends — so multiple modules chain together
 - **Board**: Bigtreetech Panda Vent (ESP32 Xtensa dual-core LX6)
 - **Motors**: up to 4 independent DC motors across two mainboard chains, each driven forward/reverse via LEDC PWM at 30 kHz with hall-sensor position feedback
-- **LEDs**: WS2812 addressable strips via RMT — GPIO 14 and GPIO 4, one per chain
+- **LEDs**: WS2812 addressable strips via SPI + DMA — GPIO 14 and GPIO 4, one per chain
 - **User button**: switch on GPIO 12, illumination LED on GPIO 27 (off = auto, blink = manual)
 - **BOOT button**: GPIO 0 (long-press = factory reset)
 - **Hardware auto-detect**: single ADC on GPIO 35 picks between "all chains populated" (4 motors), "one chain" (2 motors), and "nothing" — hot-plug supported
@@ -101,7 +110,7 @@ each arrival.
 - ✅ WiFi station + AP fallback, mDNS `DragonVent.local`, captive portal
 - ✅ Unified SPA management: live vent controls plus schema-driven Wi-Fi,
   printer-source, fallback-AP, event-log, OTA, and factory-reset setup
-- ⬜ Deferred to 0.4.x: WS2812 RGB status lighting
+- ✅ WS2812 RGB status lighting — effects, printer-status colors, and per-strip reverse (shipped in the 0.5.x series)
 
 [![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/wildtang3nt)
 

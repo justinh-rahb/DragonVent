@@ -158,6 +158,16 @@ static void compute_base(uint8_t out[3])
     out[0] = base[0]; out[1] = base[1]; out[2] = base[2];
 }
 
+// Map physical LED index j on strip `strip` to its logical position along the
+// visible bar, for spatial effects. Each strip has its own reverse flag, so one
+// strip can run opposite the other (e.g. fed from the far connector), which makes
+// effects "circle" the printer instead of mirroring.
+static inline int logical_pos(int strip, int j)
+{
+    bool rev = (strip >= 0 && strip < MAX_STRIPS) && s_cfg.rev_strip[strip];
+    return rev ? (LEDS_PER_STRIP - 1 - j) : j;
+}
+
 // Render one frame from the current config + state (assumes s_lock held).
 static void render_locked(void)
 {
@@ -189,7 +199,7 @@ static void render_locked(void)
     case DV_FX_RAINBOW: {
         for (int i = 0; i < s_count; ++i) {
             for (int j = 0; j < LEDS_PER_STRIP; ++j) {
-                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                int p = logical_pos(i, j);
                 uint16_t hue = (uint16_t)(s_phase + (uint32_t)p * (65536 / LEDS_PER_STRIP));
                 uint8_t rgb[3];
                 hsv2rgb(hue, 255, s_cfg.brightness, rgb);
@@ -215,7 +225,7 @@ static void render_locked(void)
         compute_base(base);
         for (int i = 0; i < s_count; ++i) {
             for (int j = 0; j < LEDS_PER_STRIP; ++j) {
-                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                int p = logical_pos(i, j);
                 uint16_t x = (uint16_t)((uint32_t)p * (65536 / LEDS_PER_STRIP) + s_phase);
                 uint8_t w = (x < 32768) ? (uint8_t)(x >> 7) : (uint8_t)(255 - ((x - 32768) >> 7));
                 uint16_t lvl = (uint16_t)s_cfg.brightness * w / 255;
@@ -236,7 +246,7 @@ static void render_locked(void)
         int offset = (int)((s_phase >> 11) % 3);
         for (int i = 0; i < s_count; ++i) {
             for (int j = 0; j < LEDS_PER_STRIP; ++j) {
-                int p = s_cfg.reverse ? (LEDS_PER_STRIP - 1 - j) : j;
+                int p = logical_pos(i, j);
                 bool lit = ((p + offset) % 3) == 0;   // every 3rd LED, scrolling
                 if (lit) led_strip_set_pixel(s_strips[i], j, on_rgb[0], on_rgb[1], on_rgb[2]);
                 else     led_strip_set_pixel(s_strips[i], j, 0, 0, 0);
@@ -244,6 +254,29 @@ static void render_locked(void)
             led_strip_refresh(s_strips[i]);
         }
         s_last[0] = 0x66;
+        break;
+    }
+    case DV_FX_CYLON: {
+        uint8_t base[3];
+        compute_base(base);
+        // Eye bounces 0 -> L-1 -> 0 within each strip (strips run in sync), driven
+        // by s_phase; per-strip reverse still flips a strip's direction.
+        int span = 2 * (LEDS_PER_STRIP - 1);
+        int t = (int)((uint32_t)(uint16_t)s_phase * span / 65536);
+        int eye = (t < LEDS_PER_STRIP) ? t : (span - t);
+        for (int i = 0; i < s_count; ++i) {
+            for (int j = 0; j < LEDS_PER_STRIP; ++j) {
+                int p = logical_pos(i, j);
+                int d = p - eye; if (d < 0) d = -d;   // distance from the eye
+                uint8_t f = (d == 0) ? 255 : (d == 1) ? 90 : (d == 2) ? 22 : 0;
+                uint16_t lvl = (uint16_t)s_cfg.brightness * f / 255;
+                uint8_t rgb[3];
+                for (int k = 0; k < 3; ++k) rgb[k] = (uint8_t)((uint16_t)base[k] * lvl / 255);
+                led_strip_set_pixel(s_strips[i], j, rgb[0], rgb[1], rgb[2]);
+            }
+            led_strip_refresh(s_strips[i]);
+        }
+        s_last[0] = 0x77;
         break;
     }
     case DV_FX_BREATHE: {
@@ -336,6 +369,8 @@ static void cfg_load(void)
         size_t cap = sizeof(buf);
         if (need <= cap && nvs_get_blob(h, CFG_NVS_KEY, buf, &cap) == ESP_OK) {
             memcpy(&s_cfg, buf, cap);
+            // Migrate a legacy global reverse into both per-strip reverse flags.
+            if (s_cfg.reverse) { s_cfg.rev_strip[0] = 1; s_cfg.rev_strip[1] = 1; }
             ESP_LOGI(TAG, "loaded lighting config (%u B) from NVS", (unsigned)cap);
         }
     }

@@ -70,15 +70,37 @@ Poll the DragonBreath's existing read-only state API:
   `/api/v2/events` for push instead of polling — lower latency, but an SSE client is
   also new. Polling is simpler for v1.)*
 
-### The "actively heating" signal
-From the DragonBreath `/api/v2/state`:
-- **`target.effective_c > 0`** — the chamber is commanded to a nonzero setpoint. This
-  is the **steady** signal and the recommended trigger (intent to heat/hold).
-- `heater.demand` / `heater.output` — the element drive; these **flicker** with the
-  bang-bang control, so they're a poor direct trigger. Use `target.effective_c` and,
-  if desired, treat the heater as "engaged" while a nonzero target is held.
+### The "actively heating" signal — mode-aware, not just target > 0
+The DragonBreath heats in several modes that mean **different things**, so the trigger
+gates on its `mode` (`state.mode`), not merely a nonzero target:
 
-Define `chamber_heating = (effective_c > 0)`, with staleness handling below.
+| DragonBreath `mode` | Heating? | Vent |
+|---|---|---|
+| `off` | no | no seal (normal policy) |
+| `filter` (fan-only) | no | no seal — filtering isn't building heat |
+| `power_on` (manual) | yes | **seal** — the manual heat-soak case (primary) |
+| `auto` | yes *iff* filament has a zone | **seal** when `effective_c > 0` (ABS/ASA/PC); PLA zone = 0 → no seal |
+| `drying` | yes | **opt-in** (see below) — default no seal |
+
+So the trigger is:
+```
+chamber_heating = reachable && not faulted/inhibited
+                  && mode ∈ {power_on, auto}          // (+ drying iff opted in)
+                  && target.effective_c > 0
+```
+- **`target.effective_c > 0`** is the **steady** signal (intent to heat/hold). Inside
+  `auto` it self-resolves: a seal-material holds a nonzero zone target → seal; PLA's
+  zone is 0 → `effective_c = 0` → no seal (matches the vent's own "PLA vents" rule).
+- `heater.demand` / `heater.output` **flicker** with the bang-bang control, so they're a
+  poor trigger — use the setpoint, not the element drive.
+
+**Dry mode is deliberately opt-in.** Drying is usually standalone (no print), heating
+to ~45–55 °C. Sealing *holds* that temp, but drying also *expels moisture*, which argues
+for airflow — a genuine preference, and not tied to a print. Gate it behind an explicit
+sub-toggle ("also seal while the chamber heater is drying"), **default off**, so the
+soak/print path is clean out of the box.
+
+Staleness handling is below.
 
 ### Failure / staleness handling
 - If the DragonBreath is unreachable, returns an error, or its last good sample is
@@ -87,19 +109,43 @@ Define `chamber_heating = (effective_c > 0)`, with staleness handling below.
 - Link disabled → the feature is completely inert; policy is unchanged.
 
 ### AUTO policy integration
-Add `chamber_heating` as a new input to `dv_policy` with high precedence:
+The feature lives **only inside the vent's AUTO mode**. If the vent is in MANUAL
+(user pinned open/closed), that explicit choice always wins and the breath link is
+inert. Within vent-AUTO, `chamber_heating` is a new input with high precedence:
 
 ```
-1. unreliable / error            -> hold (unchanged)
-2. chamber_heating (DragonBreath) -> CLOSED   ← NEW
-3. active print + material rule   -> seal / open (unchanged)
-4. idle + bed hysteresis          -> open / close / hold (unchanged)
+vent MANUAL → user's pinned target (breath link inert)
+vent AUTO:
+  1. unreliable / error            -> hold (unchanged)
+  2. chamber_heating (DragonBreath) -> CLOSED   ← NEW overlay
+  3. active print + material rule   -> seal / open (unchanged)
+  4. idle + bed hysteresis          -> open / close / hold (unchanged)
 ```
 
 - Seal while the DragonBreath holds a setpoint; when it drops the setpoint (cooldown),
   revert to the normal policy so the existing bed hysteresis vents residual heat.
 - Use the steady `effective_c > 0` (not the flickering element drive) so the vent
   doesn't flap; add a short close-hold if needed.
+
+### Handoff & lifecycle
+The breath-link seal is a high-precedence **overlay**, not a separate mode — the
+"handoff" is just precedence. Walk a full ABS job:
+
+1. **Pre-print soak** — you power on the breath (`power_on`). The overlay seals the vent.
+   *(This is the window that stays open today.)*
+2. **Print starts** — the breath flips to `auto` @ its zone target, **and** the vent's
+   own material rule (ABS → seal) also says CLOSED. They **agree**, so the transition is
+   invisible — no flap, no gap. Control passes seamlessly from overlay to base policy.
+3. **Print ends** — the breath target → 0 (cooldown), the overlay releases, and the vent
+   falls back to idle bed-hysteresis: a still-hot bed → **opens** to vent residual heat
+   until cool. This is the one visible transition, and it's the desired behavior.
+
+Because the breath's `auto` seal and the vent's material rule point the same way for
+seal-materials, the print-phase transition is seamless; the only handback is at
+cooldown. Edge case (open question 4): a manual soak (`power_on`) followed by a
+**PLA** print pits the overlay (seal, heater still on) against the material rule (open) —
+proposed resolution: while the breath is commanded to heat, sealing wins; turn the breath
+off to vent.
 
 ### Where the code lives
 Two options for discussion:
@@ -119,16 +165,19 @@ Two options for discussion:
 - Hardware validation: a paired DragonBreath + DragonVent on the same LAN.
 
 ## Open questions
-1. **Trigger definition** — `target.effective_c > 0` alone, or also require the device
-   not be OFF/faulted? (Probably: heating ⇔ nonzero effective target and not
-   inhibited/faulted.)
-2. **Discovery** — manual host + mDNS scan for v1, or require manual entry initially?
-3. **Code home** — `dc_breath` in dragon-core (reusable) vs `dv_breath` in the vent
-   (fast)? 
-4. **Precedence vs an active PLA print** — if the chamber heater is on but a
-   vent-preferred material is loaded, does chamber-heating still win? (Proposed: yes —
-   an on chamber heater is an explicit heat-retention intent.)
-5. **SSE vs polling** — start with polling; revisit SSE if latency matters.
+1. **Trigger definition** — proposed `mode ∈ {power_on, auto} && effective_c > 0 &&
+   not faulted/inhibited` (see the mode table). Agree on the mode gate vs a plain
+   `effective_c > 0`?
+2. **Dry mode** — opt-in sub-toggle (default off) as proposed, or seal during drying by
+   default, or never? (Moisture-expulsion vs heat-retention tradeoff, and drying is
+   usually printless.)
+3. **Discovery** — manual host + mDNS scan for v1, or require manual entry initially?
+4. **Code home** — `dc_breath` in dragon-core (reusable) vs `dv_breath` in the vent
+   (fast)?
+5. **Precedence vs an active PLA print** — manual soak then a PLA print: overlay (seal,
+   heater on) vs material rule (open). Proposed: sealing wins while the breath is
+   commanded to heat.
+6. **SSE vs polling** — start with polling; revisit SSE if latency matters.
 
 ## Out of scope / future
 - Bidirectional (DragonBreath reacting to vent state).

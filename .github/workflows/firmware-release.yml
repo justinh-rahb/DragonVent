@@ -52,6 +52,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Pull this version's section from CHANGELOG.md (## [x.y.z] .. next ## [).
+          changelog="$(awk -v v="${RELEASE_TAG#v}" '
+            $0 ~ ("^## \\[" v "\\]") {f=1; next}
+            f && /^## \[/ {exit}
+            f {print}
+          ' CHANGELOG.md 2>/dev/null || true)"
+
           cat > release_notes.md <<NOTES
           ## Install over stock — from a browser, no cable
 
@@ -96,6 +103,13 @@ jobs:
           shasum -a 256 -c SHA256SUMS
           \`\`\`
           NOTES
+
+          # Prepend this version's CHANGELOG section above the install guide, so the
+          # release opens with what changed (matching the DragonBreath releases).
+          if [ -n "$(printf '%s' "$changelog" | tr -d '[:space:]')" ]; then
+            { printf "## What's new in %s\n%s\n\n" "$RELEASE_TAG" "$changelog"; cat release_notes.md; } > release_notes.md.new
+            mv release_notes.md.new release_notes.md
+          fi
 
           # A semver pre-release tag carries a hyphenated suffix (v0.4.0-rc1,
           # v1.0.0-beta2). Publish those as GitHub pre-releases so they are not

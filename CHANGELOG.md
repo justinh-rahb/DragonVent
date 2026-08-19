@@ -7,6 +7,18 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-08-19
+
+### Added
+- **Seal the vent while the chamber heater is heating.** In AUTO, DragonVent now
+  closes the vent whenever a paired **DragonBreath** (via the `dragonbreath-klipper`
+  helper) is deliberately heating — `connected && !fault && !inhibited &&
+  device_target > 0 && mode ∈ {power_on, auto}`. This covers a chamber heat soak,
+  where a warm bed at idle would otherwise open the vent to shed residual heat.
+  Uses the helper's confirmed state over Moonraker (re-pins **dragon-core v0.25.0**);
+  no extra configuration. Turning the chamber heater off returns to the normal
+  bed/material policy. Hardware-validated end-to-end.
+
 ## [0.5.7] - 2026-08-19
 
 ### Fixed

@@ -86,6 +86,7 @@ typedef struct {
     bool reliable;
     bool error;
     bool active;
+    bool chamber_heating;   // a paired DragonBreath is deliberately heating the chamber
     float bed_temp;
     char material[16];
     const char *state;
@@ -108,6 +109,14 @@ static void read_auto_input(auto_input_t *out)
         out->bed_temp = st.bed_temp;
         snprintf(out->material, sizeof(out->material), "%s", st.material);
         out->state = dc_printer_state_str(st.printer);
+        // Paired DragonBreath (via the dragonbreath-klipper helper): seal while it
+        // is deliberately heating. Use the helper's confirmed device state, not an
+        // inference from chamber temperature. mode power_on/auto = heating intent;
+        // off/drying/filter do not seal.
+        bool db_heat_mode = strcmp(st.db_mode, "power_on") == 0 ||
+                            strcmp(st.db_mode, "auto") == 0;
+        out->chamber_heating = st.db_present && st.db_connected && !st.db_fault &&
+                               !st.db_inhibited && st.db_target > 0.0f && db_heat_mode;
         return;
     }
 
@@ -139,14 +148,21 @@ static void apply_target(dv_motor_target_t t)
 // Order of consideration:
 //   1. No subscription yet / unknown state -> hold
 //   2. ERROR                               -> hold (don't move on a broken printer)
-//   3. Printing/preparing/paused + material rule wants sealed -> CLOSED
-//   4. Printing/preparing/paused           -> OPEN
-//   5. Idle/complete, bed still hot        -> OPEN  (residual heat)
-//   6. Idle/complete, bed cool             -> CLOSED
-//   7. Otherwise                           -> hold  (hysteresis band)
+//   3. Chamber heater deliberately heating -> CLOSED (seal to build/hold chamber heat)
+//   4. Printing/preparing/paused + material rule wants sealed -> CLOSED
+//   5. Printing/preparing/paused           -> OPEN
+//   6. Idle/complete, bed still hot        -> OPEN  (residual heat)
+//   7. Idle/complete, bed cool             -> CLOSED
+//   8. Otherwise                           -> hold  (hysteresis band)
 static dv_motor_target_t decide_auto_target(const auto_input_t *st)
 {
     if (!st->reliable || st->error) return s_current_target;
+
+    // A paired DragonBreath actively heating the chamber is an explicit
+    // heat-retention intent: seal, regardless of print state or material. This is
+    // what covers a pre-print heat soak, where the idle "hot bed -> OPEN"
+    // residual-heat rule would otherwise open the vent.
+    if (st->chamber_heating) return DV_MOTOR_TARGET_CLOSED;
 
     if (st->active) {
         material_pref_t mat = material_preference(st->material);

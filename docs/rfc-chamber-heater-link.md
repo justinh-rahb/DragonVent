@@ -1,6 +1,29 @@
 # RFC: Chamber-heater link — seal the vent while the DragonBreath is heating
 
-Status: **📋 Proposed (RFC) — not started.** Design record for discussion; no code yet.
+Status: **🔨 Accepted — phased (V1 in progress).** Direction agreed on
+[PR #17](https://github.com/justinh-rahb/DragonVent/pull/17).
+
+## Decision — phased plan
+
+Rather than the vent polling the DragonBreath directly (the original design below),
+V1 reuses the **Moonraker** transport the vent already has — now hardened with the
+`dc_moonraker` reconnect/staleness watchdog (dragon-core #42 / v0.24.0). With the
+`dragonbreath-klipper` helper installed, Moonraker already publishes DragonBreath's
+**authoritative** state, so no temperature/name inference is needed.
+
+- **V1 (Klipper + `dragonbreath-klipper` helper):** `dc_moonraker` subscribes to the
+  helper's `dragonbreath` object (`get_status`: `device_target`, `mode`, `connected`,
+  `fault`, `inhibited`, `heating`). `dv_policy` seals when
+  `connected && !fault && !inhibited && device_target > 0 && mode ∈ {power_on, auto}`.
+  Also: stop `dv_policy` dropping `heater_bed.target` — bed-target + material rule
+  covers most pre-print bed soaks even without the helper object. No new HTTP client,
+  host/token config, discovery, or failure state machine.
+- **V2 (source-agnostic fallback):** the direct HTTP DragonBreath link below, for
+  **Bambu / Home Assistant / standalone / Klipper without the helper**.
+- **Optional:** a configurable generic `heater_generic <name>` trigger for
+  non-DragonBreath chamber heaters (`target > 0`, weaker signal).
+
+The rest of this document is the original direct-HTTP design, retained as the V2 spec.
 
 ## Motivation
 

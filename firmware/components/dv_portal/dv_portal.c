@@ -8,9 +8,11 @@
 
 #include "cJSON.h"
 #include "dc_bambu.h"
+#include "dc_breath_link.h"
 #include "dv_bambu_state.h"
 #include "dc_evlog.h"
 #include "dc_moonraker.h"
+#include "esp_timer.h"
 #include "dc_portal.h"
 #include "dc_source.h"
 #include "dc_wifi.h"
@@ -223,11 +225,38 @@ static cJSON *make_state(void)
     else cJSON_AddNumberToObject(printer, "bed_temperature_c", bed);
     cJSON_AddStringToObject(printer, "material", material);
 
-    float open_c = 45, close_c = 35;
-    dv_policy_get_thresholds(&open_c, &close_c);
-    cJSON *policy = cJSON_AddObjectToObject(root, "policy");
-    cJSON_AddNumberToObject(policy, "bed_open_c", open_c);
-    cJSON_AddNumberToObject(policy, "bed_close_c", close_c);
+    // DragonBreath advisory info source (for the status card; shown only when configured).
+    dc_breath_link_config_t bl = {0}; dc_breath_link_get_config(&bl);
+    cJSON *db = cJSON_AddObjectToObject(root, "dragonbreath");
+    bool db_conf = bl.enabled;   // ESP-NOW is push-based; a bound peer just scopes which Breath
+    cJSON_AddBoolToObject(db, "configured", db_conf);
+    cJSON_AddStringToObject(db, "bound_peer", bl.peer_id);   // "" = accept any DragonBreath
+    if (db_conf) {
+        dc_breath_snapshot_t snap;
+        bool fresh = dc_breath_link_get(&snap) && snap.valid &&
+                     (esp_timer_get_time() - snap.updated_us) < DC_BREATH_FRESH_US;
+        cJSON_AddBoolToObject(db, "online", fresh);
+        cJSON_AddBoolToObject(db, "heater_running", dc_breath_link_heater_running());
+        cJSON_AddStringToObject(db, "mode", fresh ? snap.mode : "");
+        if (fresh && !isnan(snap.chamber_c)) cJSON_AddNumberToObject(db, "chamber_c", snap.chamber_c);
+        else cJSON_AddNullToObject(db, "chamber_c");
+        cJSON_AddNumberToObject(db, "target_c", fresh ? snap.target_c : 0.0);
+        // Transport diagnostics: which link is carrying the state, and from whom.
+        const char *tx = !fresh ? "none"
+                       : snap.transport == DC_BREATH_TX_ESPNOW ? "espnow"
+                       : snap.transport == DC_BREATH_TX_HTTP   ? "http" : "none";
+        cJSON_AddStringToObject(db, "transport", tx);
+        cJSON_AddStringToObject(db, "peer", fresh ? snap.peer_id : bl.peer_id);
+        dc_peer_stats_t ps; dc_peer_get_stats(&ps);
+        cJSON *espnow = cJSON_AddObjectToObject(db, "espnow");
+        cJSON_AddBoolToObject(espnow, "started", ps.started);
+        cJSON_AddNumberToObject(espnow, "rx_frames", ps.rx_frames);
+        cJSON_AddNumberToObject(espnow, "tx_frames", ps.tx_frames);
+        if (ps.last_rx_us) cJSON_AddNumberToObject(espnow, "last_rx_ms_ago",
+            (double)(esp_timer_get_time() - ps.last_rx_us) / 1000.0);
+        else cJSON_AddNullToObject(espnow, "last_rx_ms_ago");
+        cJSON_AddStringToObject(espnow, "last_peer", ps.last_peer_id);
+    }
 
     cJSON *wifi = cJSON_AddObjectToObject(root, "wifi");
     cJSON_AddStringToObject(wifi, "state", wifi_wire(dc_wifi_state()));
@@ -302,34 +331,6 @@ static esp_err_t command_post(httpd_req_t *req)
     if (err != ESP_OK) return api_error(req, "409 Conflict", esp_err_to_name(err));
     ++s_api_revision;
     dc_evlog_add("api: mode=%s target=%s", dv_policy_get_mode() == DV_POLICY_MODE_AUTO ? "auto" : "manual", target_wire(dv_policy_get_target()));
-    cJSON *reply = cJSON_CreateObject();
-    cJSON_AddItemToObject(reply, "state", make_state());
-    return send_json(req, reply);
-}
-
-static esp_err_t settings_get(httpd_req_t *req)
-{
-    float open_c = 45, close_c = 35;
-    dv_policy_get_thresholds(&open_c, &close_c);
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "api_version", 2);
-    cJSON_AddNumberToObject(root, "bed_open_c", open_c);
-    cJSON_AddNumberToObject(root, "bed_close_c", close_c);
-    return send_json(req, root);
-}
-
-static esp_err_t settings_post(httpd_req_t *req)
-{
-    if (auth_reject(req)) return ESP_OK;
-    cJSON *body = recv_json(req);
-    cJSON *open = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_open_c") : NULL;
-    cJSON *close = body ? cJSON_GetObjectItemCaseSensitive(body, "bed_close_c") : NULL;
-    if (!cJSON_IsNumber(open) || !cJSON_IsNumber(close)) { cJSON_Delete(body); return api_error(req, "400 Bad Request", "bed_open_c and bed_close_c are required"); }
-    float open_c = (float)open->valuedouble, close_c = (float)close->valuedouble;
-    cJSON_Delete(body);
-    if (!isfinite(open_c) || !isfinite(close_c) || close_c < 0 || open_c > 120 || dv_policy_set_thresholds(open_c, close_c) != ESP_OK)
-        return api_error(req, "400 Bad Request", "open temperature must be above close temperature and both must be 0..120 C");
-    ++s_api_revision;
     cJSON *reply = cJSON_CreateObject();
     cJSON_AddItemToObject(reply, "state", make_state());
     return send_json(req, reply);
@@ -614,14 +615,54 @@ static cJSON *describe_product(void *ctx)
     cJSON_AddBoolToObject(field(fields, "control_token", "Control token", "text", ""), "secret", true);
     cJSON_AddItemToArray(sections, security);
 
-    float open_c = 45, close_c = 35; dv_policy_get_thresholds(&open_c, &close_c);
-    cJSON *policy = cJSON_CreateObject(); cJSON_AddStringToObject(policy, "title", "Automatic vent policy");
-    fields = cJSON_AddArrayToObject(policy, "fields");
-    char number[16]; snprintf(number, sizeof(number), "%.0f", open_c);
-    cJSON *f = field(fields, "bed_open_c", "Open at °C", "number", number); cJSON_AddNumberToObject(f,"min",1); cJSON_AddNumberToObject(f,"max",120);
-    snprintf(number, sizeof(number), "%.0f", close_c);
-    f = field(fields, "bed_close_c", "Close below °C", "number", number); cJSON_AddNumberToObject(f,"min",0); cJSON_AddNumberToObject(f,"max",119);
-    cJSON_AddItemToArray(sections, policy);
+    // DragonBreath info source: when a paired Breath is heating the chamber, AUTO seals
+    // the vent — a running heat job takes precedence over print state (the chamber should
+    // stay sealed during a soak). When it's not heating, the vent follows the printer, or
+    // in Standalone opens for cooldown. The link is advisory/unauthenticated on purpose:
+    // it only ever moves a damper, never a heater, so a spoofed frame is harmless (see
+    // dv_policy + the RFC threat-model note).
+    dc_breath_link_config_t bl = {0}; dc_breath_link_get_config(&bl);
+    cJSON *breath = cJSON_CreateObject();
+    cJSON_AddStringToObject(breath, "title", "DragonBreath info source");
+    cJSON_AddStringToObject(breath, "description",
+        "Optional. Pick one DragonBreath. While it is heating the chamber (soak, hold, or "
+        "filament drying) AUTO seals the vent — a running heat job takes precedence, so the "
+        "chamber stays sealed regardless of print state. When the Breath is not heating, the "
+        "vent follows the printer, or in Standalone opens for cooldown (a cold chamber has "
+        "nothing to retain).");
+    fields = cJSON_AddArrayToObject(breath, "fields");
+    field(fields, "breath_enabled", "Enable DragonBreath info source", "boolean", bl.enabled ? "1" : "0");
+    // Peer selector: bind to one DragonBreath heard on the network, or "" = any. Options
+    // are the recently-heard peers (dc_peer roster) plus an "Any" entry; if a peer is
+    // already bound but currently silent it's added too so it stays selectable.
+    cJSON *peer_f = field(fields, "breath_peer", "DragonBreath device", "select", bl.peer_id);
+    cJSON *opts = cJSON_AddArrayToObject(peer_f, "options");
+    // Placeholder only — the link must bind to ONE specific Breath. There is no
+    // "accept any" option: an empty selection means unbound (no heater signal), so a
+    // nearby sender can't be adopted by claiming to be a DragonBreath.
+    { cJSON *o = cJSON_CreateObject(); cJSON_AddStringToObject(o, "value", "");
+      cJSON_AddStringToObject(o, "label", "— select a DragonBreath —"); cJSON_AddItemToArray(opts, o); }
+    dc_peer_info_t peers[8];
+    int np = dc_peer_get_peers(peers, 8);
+    bool bound_seen = (bl.peer_id[0] == '\0');
+    for (int i = 0; i < np; ++i) {
+        // The roster carries every heard peer regardless of product; offer only the
+        // DragonBreath peers (each provider ids itself "dragon<kind>-<hex>").
+        if (dc_peer_kind_from_id(peers[i].id) != DC_PEER_KIND_BREATH) continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "value", peers[i].id);
+        cJSON_AddStringToObject(o, "label", peers[i].id);
+        cJSON_AddItemToArray(opts, o);
+        if (strncmp(peers[i].id, bl.peer_id, DC_PEER_ID_MAX) == 0) bound_seen = true;
+    }
+    if (!bound_seen) {   // bound peer is offline right now; keep it selectable
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "value", bl.peer_id);
+        char lbl[DC_PEER_ID_MAX + 16]; snprintf(lbl, sizeof lbl, "%s (offline)", bl.peer_id);
+        cJSON_AddStringToObject(o, "label", lbl);
+        cJSON_AddItemToArray(opts, o);
+    }
+    cJSON_AddItemToArray(sections, breath);
     return root;
 }
 
@@ -644,13 +685,16 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
     (void)ctx;
     const char *source_text = string_value(values, "source");
     dc_ctl_source_t source = dc_source_get();
+    bool source_changed = false;   // only a control-source change needs a restart to apply
     if (source_text) {
+        dc_ctl_source_t before = source;
         if (!strcmp(source_text, "klipper")) source = DC_SRC_KLIPPER;
         else if (!strcmp(source_text, "bambu")) source = DC_SRC_BAMBU;
         else if (!strcmp(source_text, "none")) source = DC_SRC_NONE;
         else { snprintf(message, message_size, "Unknown control source"); return ESP_ERR_INVALID_ARG; }
         esp_err_t err = dc_source_set(source);
         if (err != ESP_OK) return err;
+        source_changed = (source != before);
     }
     const char *mk_host = string_value(values, "moonraker_host");
     if (mk_host) {
@@ -696,12 +740,20 @@ static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, si
         dc_evlog_add("control token %s", strcmp(token, "-") == 0 ? "cleared" : "set");
     }
 
-    double open_c = 0, close_c = 0;
-    if (number_value(values, "bed_open_c", &open_c) && number_value(values, "bed_close_c", &close_c) &&
-        dv_policy_set_thresholds((float)open_c, (float)close_c) != ESP_OK) {
-        snprintf(message, message_size, "Open temperature must be above close temperature"); return ESP_ERR_INVALID_ARG;
+    // DragonBreath info source (bound peer + enable). ESP-NOW: no address, just which
+    // Breath to bind ("" = accept any heard on the network).
+    const char *bp = string_value(values, "breath_peer");
+    const char *be = string_value(values, "breath_enabled");
+    if (bp || be) {
+        dc_breath_link_config_t c = {0}; dc_breath_link_get_config(&c);
+        if (bp) snprintf(c.peer_id, sizeof(c.peer_id), "%s", bp);
+        if (be) c.enabled = (strcmp(be, "1") == 0);
+        esp_err_t err = dc_breath_link_set_config(&c);
+        if (err != ESP_OK) { snprintf(message, message_size, "Could not save DragonBreath settings"); return err; }
     }
-    snprintf(message, message_size, "Settings saved. Restart to apply a source change.");
+    snprintf(message, message_size, source_changed
+             ? "Settings saved. Restart to apply the control-source change."
+             : "Settings saved.");
     return ESP_OK;
 }
 
@@ -710,6 +762,7 @@ static esp_err_t factory_reset(void *ctx)
     (void)ctx;
     esp_err_t first = dc_moonraker_clear_config();
     if (first == ESP_OK) first = dc_bambu_clear_config();
+    if (first == ESP_OK) first = dc_breath_link_clear_config();
     if (first == ESP_OK) first = dc_source_set(DC_SRC_KLIPPER);
     if (first == ESP_OK) first = dv_policy_clear();
     return first;
@@ -721,8 +774,6 @@ esp_err_t dv_portal_start(void)
         { .uri = "/api/v2/info", .method = HTTP_GET, .handler = info_get },
         { .uri = "/api/v2/state", .method = HTTP_GET, .handler = state_get },
         { .uri = "/api/v2/command", .method = HTTP_POST, .handler = command_post },
-        { .uri = "/api/v2/settings", .method = HTTP_GET, .handler = settings_get },
-        { .uri = "/api/v2/settings", .method = HTTP_POST, .handler = settings_post },
         { .uri = "/api/v2/lighting", .method = HTTP_GET, .handler = lighting_get },
         { .uri = "/api/v2/lighting", .method = HTTP_POST, .handler = lighting_post },
         { .uri = "/api/v2/filament", .method = HTTP_GET, .handler = filament_get },

@@ -1,4 +1,5 @@
 dependencies:
+  # dragon-core v0.33.0 adds dc_breath_link and the dc_ui status card.
   dc_evlog:
     git: https://github.com/justinh-rahb/dragon-core.git
     path: components/dc_evlog
@@ -19,6 +20,10 @@ dependencies:
     git: https://github.com/justinh-rahb/dragon-core.git
     path: components/dc_moonraker
     version: v0.33.0
+  dc_breath_link:
+    git: https://github.com/justinh-rahb/dragon-core.git
+    path: components/dc_breath_link
+    version: v0.33.0
   dc_ui:
     git: https://github.com/justinh-rahb/dragon-core.git
     path: components/dc_ui
@@ -30,4 +35,8 @@ dependencies:
   dc_lighting:
     git: https://github.com/justinh-rahb/dragon-core.git
     path: components/dc_lighting
+    version: v0.33.0
+  dc_peer:
+    git: https://github.com/justinh-rahb/dragon-core.git
+    path: components/dc_peer
     version: v0.33.0

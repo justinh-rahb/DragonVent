@@ -28,12 +28,6 @@ dv_policy_mode_t dv_policy_get_mode(void);
 esp_err_t dv_policy_set_manual_target(dv_motor_target_t t);   // persisted
 dv_motor_target_t dv_policy_get_target(void);          // whatever we're commanding
 
-// Bed-temperature hysteresis for AUTO mode (idle/complete only — during a
-// print the material rule wins). Default 45 / 35 °C. OPEN must be strictly
-// greater than CLOSE.
-esp_err_t dv_policy_get_thresholds(float *bed_open_c, float *bed_close_c);
-esp_err_t dv_policy_set_thresholds(float bed_open_c, float bed_close_c);
-
 // Filament rules for AUTO mode. During a print, if the detected filament name
 // begins with a rule's name, the vent follows that rule (seal = closed, else
 // vent = open); an unmatched filament vents (safe default for PLA-family).

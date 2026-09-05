@@ -7,6 +7,17 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-09-01
+
+### Changed
+- Pin **dragon-core v0.32.0** — **Wi-Fi regression fix.** The 0.30.0 STA changes
+  (modem power-save off, an aggressive no-DHCP-IP watchdog, longer retry/boot budget)
+  were tuned for the ESP32-C3 SuperMini's weak antenna and regressed Wi-Fi joins on
+  healthier radios. dragon-core now gates that hardening behind a radio profile; Vent
+  uses the default **STANDARD** profile, restoring the pre-0.30 STA behavior — stock
+  modem power-save, no no-IP watchdog, 5 retries / 30 s window. Also picks up the
+  `/console` endpoint peak-memory reduction.
+
 ## [0.5.9] - 2026-08-26
 
 ### Changed

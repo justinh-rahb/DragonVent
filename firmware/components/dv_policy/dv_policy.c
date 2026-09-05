@@ -1,6 +1,8 @@
 #include "dv_policy.h"
 #include "dc_bambu.h"
+#include "dc_breath_link.h"
 #include "dv_bambu_state.h"
+#include "esp_timer.h"
 #include "dc_evlog.h"
 #include "dc_moonraker.h"
 #include "dc_source.h"
@@ -20,18 +22,9 @@ static const char *TAG = "dv_policy";
 
 #define NVS_NS         "app_nvs"
 #define KEY_MODE       "policy_mode"
-#define KEY_BED_OPEN   "bed_open_c"
-#define KEY_BED_CLOSE  "bed_close_c"
 #define KEY_MAN_TGT    "man_tgt"
 #define KEY_FILAMENT   "fil_rules"
 
-// Defaults for the bed-temperature hysteresis if the user hasn't changed
-// them: open the vent when bed climbs above BED_OPEN_C_DEFAULT, close it
-// when it drops below BED_CLOSE_C_DEFAULT, hold current state between.
-// Chosen so residual heat after a print keeps the vent open until the
-// chamber cools.
-#define BED_OPEN_C_DEFAULT   45.0f
-#define BED_CLOSE_C_DEFAULT  35.0f
 #define TICK_MS      1000
 
 // Material-aware behavior. When the printer publishes a known material name,
@@ -79,8 +72,6 @@ static TaskHandle_t      s_task = NULL;
 static dv_policy_mode_t  s_mode = DV_POLICY_MODE_AUTO;
 static dv_motor_target_t s_manual_target  = DV_MOTOR_TARGET_CLOSED;
 static dv_motor_target_t s_current_target = DV_MOTOR_TARGET_CLOSED;
-static float             s_bed_open_c  = BED_OPEN_C_DEFAULT;
-static float             s_bed_close_c = BED_CLOSE_C_DEFAULT;
 static dc_ctl_source_t   s_source = DC_SRC_KLIPPER;
 
 typedef struct {
@@ -100,39 +91,51 @@ static void read_auto_input(auto_input_t *out)
 
     if (s_source == DC_SRC_KLIPPER) {
         dc_moonraker_status_t st = {0};
-        if (dc_moonraker_get_status(&st) != ESP_OK) return;
-        out->reliable = st.state == DC_MK_SUBSCRIBED &&
-                        st.printer != DC_PRINTER_UNKNOWN;
-        out->error = st.printer == DC_PRINTER_ERROR;
-        out->active = st.printer == DC_PRINTER_PRINTING ||
-                      st.printer == DC_PRINTER_PREPARING ||
-                      st.printer == DC_PRINTER_PAUSED;
-        out->bed_temp = st.bed_temp;
-        snprintf(out->material, sizeof(out->material), "%s", st.material);
-        out->state = dc_printer_state_str(st.printer);
-        // Paired DragonBreath (via the dragonbreath-klipper helper): seal while it
-        // is deliberately heating. Use the helper's confirmed device state, not an
-        // inference from chamber temperature. mode power_on/auto = heating intent;
-        // off/drying/filter do not seal.
-        bool db_heat_mode = strcmp(st.db_mode, "power_on") == 0 ||
-                            strcmp(st.db_mode, "auto") == 0;
-        out->chamber_heating = st.db_present && st.db_connected && !st.db_fault &&
-                               !st.db_inhibited && st.db_target > 0.0f && db_heat_mode;
-        return;
-    }
-
-    if (s_source == DC_SRC_BAMBU) {
+        if (dc_moonraker_get_status(&st) == ESP_OK) {
+            out->reliable = st.state == DC_MK_SUBSCRIBED &&
+                            st.printer != DC_PRINTER_UNKNOWN;
+            out->error = st.printer == DC_PRINTER_ERROR;
+            out->active = st.printer == DC_PRINTER_PRINTING ||
+                          st.printer == DC_PRINTER_PREPARING ||
+                          st.printer == DC_PRINTER_PAUSED;
+            out->bed_temp = st.bed_temp;
+            snprintf(out->material, sizeof(out->material), "%s", st.material);
+            out->state = dc_printer_state_str(st.printer);
+            // Fallback DragonBreath signal via the dragonbreath-klipper helper's
+            // republished device state (used only when no direct link is configured).
+            bool db_heat_mode = strcmp(st.db_mode, "power_on") == 0 ||
+                                strcmp(st.db_mode, "auto") == 0;
+            out->chamber_heating = st.db_present && st.db_connected && !st.db_fault &&
+                                   !st.db_inhibited && st.db_target > 0.0f && db_heat_mode;
+        }
+    } else if (s_source == DC_SRC_BAMBU) {
         dc_bambu_status_t st = {0};
-        if (dc_bambu_get_status(&st) != ESP_OK) return;
-        out->reliable = st.state == DC_BAMBU_SUBSCRIBED;
-        out->active = st.printing;
-        out->bed_temp = st.bed_temp;
-        snprintf(out->material, sizeof(out->material), "%s", st.filament);
-        out->state = dv_bambu_live_state_str(&st);
-        return;
+        if (dc_bambu_get_status(&st) == ESP_OK) {
+            out->reliable = st.state == DC_BAMBU_SUBSCRIBED;
+            out->active = st.printing;
+            out->bed_temp = st.bed_temp;
+            snprintf(out->material, sizeof(out->material), "%s", st.filament);
+            out->state = dv_bambu_live_state_str(&st);
+        }
+    } else {
+        out->state = dc_source_str(s_source);
+        // Standalone (no printer): the DragonBreath link, if configured and live, is the
+        // driver. Marking it reliable lets the decision run — rule 2 seals while the
+        // Breath heats, rule 4 opens when it's off. A stale/absent Breath leaves it
+        // unreliable, so the vent holds (no printer + no Breath = no signal).
+        if (s_source == DC_SRC_NONE && dc_breath_link_configured()) {
+            dc_breath_snapshot_t snap;
+            bool fresh = dc_breath_link_get(&snap) && snap.valid &&
+                         (esp_timer_get_time() - snap.updated_us) < DC_BREATH_FRESH_US;
+            if (fresh) { out->reliable = true; out->state = "breath"; }
+        }
     }
 
-    out->state = dc_source_str(s_source);
+    // DragonBreath heater signal. When a Breath is configured it drives the seal
+    // (rule 2), source-agnostic: an advisory overlay with a printer, and the primary
+    // driver in Standalone (above). Stale/absent/unconfigured => false (fail-safe).
+    if (dc_breath_link_configured())
+        out->chamber_heating = dc_breath_link_heater_running();
 }
 
 static void apply_target(dv_motor_target_t t)
@@ -142,44 +145,39 @@ static void apply_target(dv_motor_target_t t)
     s_current_target = t;
 }
 
-// AUTO decision. Returns the target we should be driving toward, given the
-// current Moonraker snapshot. If we don't have reliable data, keep whatever
-// we're already commanding.
+// AUTO decision. Returns the target we should be driving toward, given the current
+// printer snapshot and (when configured) the direct DragonBreath heater signal. If we
+// don't have reliable data, keep whatever we're already commanding.
 //
 // Order of consideration:
-//   1. No subscription yet / unknown state -> hold
-//   2. ERROR                               -> hold (don't move on a broken printer)
-//   3. Chamber heater deliberately heating -> CLOSED (seal to build/hold chamber heat)
-//   4. Printing/preparing/paused + material rule wants sealed -> CLOSED
-//   5. Printing/preparing/paused           -> OPEN
-//   6. Idle/complete, bed still hot        -> OPEN  (residual heat)
-//   7. Idle/complete, bed cool             -> CLOSED
-//   8. Otherwise                           -> hold  (hysteresis band)
+//   1. No subscription yet / unknown state / ERROR -> hold
+//   2. DragonBreath heater running (soak / hold / dry) -> CLOSED
+//   3. Printing/preparing/paused + material wants sealed (ASA/ABS/PC/PA) -> CLOSED
+//   4. Not printing + heater off -> OPEN  (print is over + no heat job = cooldown)
+//   5. Printing + non-sealing material (PLA) -> OPEN
+//
+// Bed temperature is deliberately NOT used. A just-finished print leaves the bed hot
+// for many minutes, so bed temp cannot distinguish "print over" from "still printing";
+// the printer's own print-state edge (`active`) is the reliable signal instead.
 static dv_motor_target_t decide_auto_target(const auto_input_t *st)
 {
     if (!st->reliable || st->error) return s_current_target;
 
-    // A paired DragonBreath actively heating the chamber is an explicit
-    // heat-retention intent: seal, regardless of print state or material. This is
-    // what covers a pre-print heat soak, where the idle "hot bed -> OPEN"
-    // residual-heat rule would otherwise open the vent.
+    // A DragonBreath actively running a heating job (power_on/auto/drying with a
+    // target) is an explicit heat-retention intent: seal, regardless of print state
+    // or material. This covers the pre-print heat soak and a mid-print chamber hold.
     if (st->chamber_heating) return DV_MOTOR_TARGET_CLOSED;
 
     if (st->active) {
         material_pref_t mat = material_preference(st->material);
         if (mat == MAT_PREFER_SEALED) return DV_MOTOR_TARGET_CLOSED;
-        // MAT_PREFER_OPEN and MAT_PREFER_UNKNOWN both open during a print —
-        // the tester's ask is that PLA-style vents while ABS seals; when we
-        // don't know the material we default to venting, which is the safer
-        // choice for PLA-family plastics that dominate hobby printing.
+        // MAT_PREFER_OPEN / UNKNOWN vent during a print (PLA-family default).
         return DV_MOTOR_TARGET_OPEN;
     }
 
-    // Idle / complete: use bed-temp hysteresis so residual chamber heat
-    // keeps the vent open until things cool down.
-    if (st->bed_temp > s_bed_open_c)  return DV_MOTOR_TARGET_OPEN;
-    if (st->bed_temp < s_bed_close_c) return DV_MOTOR_TARGET_CLOSED;
-    return s_current_target;
+    // Not printing and no heat-retention job -> the print is over and the heater is
+    // off, so open to vent the cooldown.
+    return DV_MOTOR_TARGET_OPEN;
 }
 
 static void policy_task(void *arg)
@@ -218,15 +216,6 @@ static void policy_task(void *arg)
 
 // ---------- NVS ----------
 
-// NVS stores °C values as centi-degrees in a u32 so we don't have to teach
-// nvs about floats. 45.0 °C -> 4500. Range is clamped in setter.
-static float centi_to_c(uint32_t v) { return (float)v / 100.0f; }
-static uint32_t c_to_centi(float c)
-{
-    if (c < 0.0f)   c = 0.0f;
-    if (c > 200.0f) c = 200.0f;
-    return (uint32_t)(c * 100.0f + 0.5f);
-}
 
 static void load_persisted(void)
 {
@@ -250,10 +239,6 @@ static void load_persisted(void)
         s_manual_target = (t == DV_MOTOR_TARGET_OPEN) ? DV_MOTOR_TARGET_OPEN
                                                      : DV_MOTOR_TARGET_CLOSED;
     }
-    uint32_t v = 0;
-    if (nvs_get_u32(h, KEY_BED_OPEN,  &v) == ESP_OK) s_bed_open_c  = centi_to_c(v);
-    if (nvs_get_u32(h, KEY_BED_CLOSE, &v) == ESP_OK) s_bed_close_c = centi_to_c(v);
-
     // Filament rules: override the defaults from the NVS blob if present + valid
     // (a whole number of rules). On any error nvs_get_blob leaves s_rules alone.
     size_t rsz = sizeof(s_rules);
@@ -282,15 +267,6 @@ static void save_manual_target(dv_motor_target_t t)
     nvs_close(h);
 }
 
-static void save_thresholds(float open_c, float close_c)
-{
-    nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_u32(h, KEY_BED_OPEN,  c_to_centi(open_c));
-    nvs_set_u32(h, KEY_BED_CLOSE, c_to_centi(close_c));
-    nvs_commit(h);
-    nvs_close(h);
-}
 
 int dv_policy_filament_rules(dv_filament_rule_t *out, int max)
 {
@@ -372,30 +348,6 @@ esp_err_t dv_policy_set_manual_target(dv_motor_target_t t)
 
 dv_motor_target_t dv_policy_get_target(void) { return s_current_target; }
 
-esp_err_t dv_policy_get_thresholds(float *bed_open_c, float *bed_close_c)
-{
-    if (bed_open_c == NULL || bed_close_c == NULL) return ESP_ERR_INVALID_ARG;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    *bed_open_c  = s_bed_open_c;
-    *bed_close_c = s_bed_close_c;
-    xSemaphoreGive(s_lock);
-    return ESP_OK;
-}
-
-esp_err_t dv_policy_set_thresholds(float bed_open_c, float bed_close_c)
-{
-    // OPEN must be strictly above CLOSE, otherwise the hysteresis band
-    // collapses / inverts and the vent will flap.
-    if (!(bed_open_c > bed_close_c)) return ESP_ERR_INVALID_ARG;
-    if (s_lock == NULL) return ESP_ERR_INVALID_STATE;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_bed_open_c  = bed_open_c;
-    s_bed_close_c = bed_close_c;
-    save_thresholds(bed_open_c, bed_close_c);
-    xSemaphoreGive(s_lock);
-    return ESP_OK;
-}
-
 esp_err_t dv_policy_clear(void)
 {
     nvs_handle_t h;
@@ -403,8 +355,6 @@ esp_err_t dv_policy_clear(void)
     if (err != ESP_OK) return err;
     nvs_erase_key(h, KEY_MODE);
     nvs_erase_key(h, KEY_MAN_TGT);
-    nvs_erase_key(h, KEY_BED_OPEN);
-    nvs_erase_key(h, KEY_BED_CLOSE);
     nvs_commit(h);
     nvs_close(h);
     return ESP_OK;

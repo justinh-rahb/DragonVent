@@ -21,6 +21,15 @@ permissions:
   contents: read
 
 jobs:
+  host-tests:
+    name: Host tests (policy truth table)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+      - name: Run host tests
+        run: node --test tests/dv_policy_truth_table.test.mjs
+
   build:
     name: Build ESP32 firmware
     runs-on: ubuntu-latest

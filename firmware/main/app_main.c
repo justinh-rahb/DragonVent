@@ -4,6 +4,10 @@
 #include "dc_bambu.h"
 #include "dv_bambu_state.h"
 #include "dc_moonraker.h"
+#include "dc_breath_link.h"
+#include "dv_peer.h"
+#include "dc_peer.h"
+#include "esp_mac.h"
 #include "dc_source.h"
 #include "dv_motor.h"
 #include "dv_policy.h"
@@ -191,6 +195,22 @@ void app_main(void)
     ESP_ERROR_CHECK(dc_wifi_start());
     select_migrated_source();   // device-specific: adopt a stock-bound Bambu printer
     ESP_ERROR_CHECK(start_control_source());
+    // ESP-NOW peer transport: init so dc_breath_link can ingest the Breath's heater
+    // pushes. Non-fatal — the HTTP fallback still works without it.
+    {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char self_id[20];
+        snprintf(self_id, sizeof(self_id), "dragonvent-%02x%02x", mac[4], mac[5]);
+        esp_err_t pe = dc_peer_start(self_id);
+        if (pe != ESP_OK) ESP_LOGW(TAG, "dc_peer_start: %s (continuing)", esp_err_to_name(pe));
+    }
+    esp_err_t bl_err = dc_breath_link_start();   // advisory DragonBreath info source; non-fatal
+    if (bl_err != ESP_OK)
+        ESP_LOGW(TAG, "dc_breath_link_start failed: %s (continuing)", esp_err_to_name(bl_err));
+    esp_err_t pv_err = dv_peer_start();          // broadcast announce + vent status; non-fatal
+    if (pv_err != ESP_OK)
+        ESP_LOGW(TAG, "dv_peer_start failed: %s (continuing)", esp_err_to_name(pv_err));
     ESP_ERROR_CHECK(dv_policy_start());
     ESP_ERROR_CHECK(dv_portal_start());
     ESP_ERROR_CHECK(dv_status_led_start());

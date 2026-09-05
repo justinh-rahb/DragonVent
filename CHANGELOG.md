@@ -7,16 +7,30 @@ below into the GitHub Release notes.
 
 ## [Unreleased]
 
-## [0.5.10] - 2026-09-01
+## [0.5.10] - 2026-09-05
+
+### Added
+- Consume paired DragonBreath heater state over ESP-NOW, with addressed HTTP as a
+  fallback, so AUTO can seal the vent promptly during chamber heating without a
+  configured peer IP address.
+
+### Fixed
+- Preserve detailed Bambu preparing, printing, paused, complete, and error states in
+  the status API and lighting policy while preventing stale disconnected state from
+  appearing live.
 
 ### Changed
-- Pin **dragon-core v0.32.0** — **Wi-Fi regression fix.** The 0.30.0 STA changes
+- Pin **dragon-core v0.33.0**. This includes the 0.32.0 **Wi-Fi regression fix**:
+  the 0.30.0 STA changes
   (modem power-save off, an aggressive no-DHCP-IP watchdog, longer retry/boot budget)
   were tuned for the ESP32-C3 SuperMini's weak antenna and regressed Wi-Fi joins on
   healthier radios. dragon-core now gates that hardening behind a radio profile; Vent
   uses the default **STANDARD** profile, restoring the pre-0.30 STA behavior — stock
   modem power-save, no no-IP watchdog, 5 retries / 30 s window. Also picks up the
-  `/console` endpoint peak-memory reduction.
+  `/console` endpoint peak-memory reduction plus the shared ESP-NOW peer and
+  DragonBreath-link components.
+- AUTO now uses printer lifecycle plus live DragonBreath heater state instead of bed
+  temperature thresholds, avoiding a hot bed being mistaken for an active print.
 
 ## [0.5.9] - 2026-08-26
 

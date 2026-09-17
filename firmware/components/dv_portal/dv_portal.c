@@ -554,6 +554,16 @@ static cJSON *describe_product(void *ctx)
     (void)ctx;
     cJSON *root = cJSON_CreateObject(), *sections = cJSON_AddArrayToObject(root, "sections");
 
+    cJSON *device = cJSON_CreateObject();
+    cJSON_AddStringToObject(device, "title", "Device");
+    cJSON_AddStringToObject(device, "description",
+        "Network hostname used for DHCP and mDNS (<hostname>.local). Changing this requires a restart.");
+    cJSON *dfields = cJSON_AddArrayToObject(device, "fields");
+    char hostname[33];
+    dc_wifi_get_hostname(hostname, sizeof hostname);
+    field(dfields, "hostname", "Hostname", "text", hostname);
+    cJSON_AddItemToArray(sections, device);
+
     // The selector lives alone in an always-visible section; the per-source
     // sections below reveal against it. The SPA looks the controlling field up
     // across the whole setup host, so it does not need to share their card.
@@ -683,6 +693,16 @@ static bool number_value(const cJSON *values, const char *key, double *out)
 static esp_err_t apply_product(const cJSON *values, void *ctx, char *message, size_t message_size)
 {
     (void)ctx;
+    const char *hostname = string_value(values, "hostname");
+    if (hostname) {
+        if (!dc_wifi_hostname_valid(hostname)) {
+            snprintf(message, message_size,
+                     "Hostname must be 1-32 chars: letters, digits, hyphen (no leading/trailing hyphen).");
+            return ESP_ERR_INVALID_ARG;
+        }
+        esp_err_t err = dc_wifi_set_hostname(hostname);   // validated + persisted by dc_wifi; applied on restart
+        if (err != ESP_OK) { snprintf(message, message_size, "Could not save hostname."); return err; }
+    }
     const char *source_text = string_value(values, "source");
     dc_ctl_source_t source = dc_source_get();
     bool source_changed = false;   // only a control-source change needs a restart to apply

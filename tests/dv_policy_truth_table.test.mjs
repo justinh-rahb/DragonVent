@@ -3,11 +3,13 @@
 // small harness, so the intended behavior is locked in rather than asserted by eye.
 //
 // Intended policy (product decision):
-//   1. no reliable data / ERROR            -> hold whatever we're commanding
+//   1. no reliable data (not subscribed / unknown) -> hold whatever we're commanding
 //   2. DragonBreath heating (soak/hold/dry) -> CLOSED, ahead of print state
-//   3. printing + heat-retaining material   -> CLOSED
-//   4. printing + venting/unknown material  -> OPEN
-//   5. not printing + not heating           -> OPEN  (cooldown; a cold chamber has
+//   3. printer ERROR/cancelled + heater off -> OPEN (vent cooldown; don't freeze a
+//                                              soak-time seal shut after a cancel)
+//   4. printing + heat-retaining material   -> CLOSED
+//   5. printing + venting/unknown material  -> OPEN
+//   6. not printing + not heating           -> OPEN  (cooldown; a cold chamber has
 //                                                      nothing to retain, so never reseal)
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -59,9 +61,12 @@ test('decide_auto_target covers the AUTO truth table', () => {
     '  st=(auto_input_t){.reliable=0}; assert(decide_auto_target(&st)==DV_MOTOR_TARGET_CLOSED);',
     '  s_current_target=DV_MOTOR_TARGET_OPEN;',
     '  st=(auto_input_t){.reliable=0}; assert(decide_auto_target(&st)==DV_MOTOR_TARGET_OPEN);',
-    // 2. error -> hold current
+    // 2. error/cancelled + heater OFF -> OPEN (vent cooldown; must NOT freeze a
+    //    soak-time CLOSED seal shut after a cancel, which maps to DC_PRINTER_ERROR).
     '  s_current_target=DV_MOTOR_TARGET_CLOSED;',
-    '  st=(auto_input_t){.reliable=1,.error=1}; assert(decide_auto_target(&st)==DV_MOTOR_TARGET_CLOSED);',
+    '  st=(auto_input_t){.reliable=1,.error=1,.chamber_heating=0}; assert(decide_auto_target(&st)==DV_MOTOR_TARGET_OPEN);',
+    // 2b. error while the Breath is STILL holding the chamber hot -> stay CLOSED.
+    '  st=(auto_input_t){.reliable=1,.error=1,.chamber_heating=1}; assert(decide_auto_target(&st)==DV_MOTOR_TARGET_CLOSED);',
     // 3. Breath heating -> CLOSED, regardless of print state / material
     '  st=(auto_input_t){.reliable=1,.chamber_heating=1,.active=0};',
     '  assert(decide_auto_target(&st)==DV_MOTOR_TARGET_CLOSED);',

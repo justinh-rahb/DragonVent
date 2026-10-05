@@ -150,23 +150,35 @@ static void apply_target(dv_motor_target_t t)
 // don't have reliable data, keep whatever we're already commanding.
 //
 // Order of consideration:
-//   1. No subscription yet / unknown state / ERROR -> hold
+//   1. No subscription yet / unknown state -> hold (no trustworthy data)
 //   2. DragonBreath heater running (soak / hold / dry) -> CLOSED
-//   3. Printing/preparing/paused + material wants sealed (ASA/ABS/PC/PA) -> CLOSED
-//   4. Not printing + heater off -> OPEN  (print is over + no heat job = cooldown)
-//   5. Printing + non-sealing material (PLA) -> OPEN
+//   3. Printer ERROR/cancelled, heater off -> OPEN (vent the cooldown; see below)
+//   4. Printing/preparing/paused + material wants sealed (ASA/ABS/PC/PA) -> CLOSED
+//   5. Not printing + heater off -> OPEN  (print is over + no heat job = cooldown)
+//   6. Printing + non-sealing material (PLA) -> OPEN
 //
 // Bed temperature is deliberately NOT used. A just-finished print leaves the bed hot
 // for many minutes, so bed temp cannot distinguish "print over" from "still printing";
 // the printer's own print-state edge (`active`) is the reliable signal instead.
 static dv_motor_target_t decide_auto_target(const auto_input_t *st)
 {
-    if (!st->reliable || st->error) return s_current_target;
+    // Only HOLD when we have no trustworthy data at all (not subscribed / unknown
+    // state). A printer ERROR/cancel is NOT held: a cancelled print maps to
+    // DC_PRINTER_ERROR, and holding here would freeze a soak-time CLOSED seal shut
+    // forever (the vent never reopens after a cancel). The independent DragonBreath
+    // heater link (checked next) is the authority for heat retention, so an error
+    // with the heater already off should vent the cooldown, not stay sealed.
+    if (!st->reliable) return s_current_target;
 
     // A DragonBreath actively running a heating job (power_on/auto/drying with a
     // target) is an explicit heat-retention intent: seal, regardless of print state
-    // or material. This covers the pre-print heat soak and a mid-print chamber hold.
+    // or material. This covers the pre-print heat soak and a mid-print chamber hold —
+    // and keeps the seal if a print errors while the chamber is still being held hot.
     if (st->chamber_heating) return DV_MOTOR_TARGET_CLOSED;
+
+    // Printer stopped (error/cancelled) and the heater is off (checked above): no
+    // heat-retention reason to stay sealed -> open to vent, same as a finished print.
+    if (st->error) return DV_MOTOR_TARGET_OPEN;
 
     if (st->active) {
         material_pref_t mat = material_preference(st->material);
